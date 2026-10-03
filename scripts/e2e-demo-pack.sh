@@ -3,7 +3,7 @@
 # demo-pack/01..07 in order through BASE (public tunnel by default). Ops raise the receipt query in between.
 # Usage: BASE=https://<tunnel> ./scripts/e2e-demo-pack.sh      (KEEP=1 keeps the claim; otherwise only the claim is removed)
 set -euo pipefail
-BASE="${BASE:-https://stamps-logical-modems-dishes.trycloudflare.com}"
+BASE="${BASE:-https://productions-orbit-porter-investigated.trycloudflare.com}"
 API="$BASE/api"; PHONE="9999999999"; OTP="111000"
 DIR="$(cd "$(dirname "$0")" && pwd)"; PACK="$DIR/../demo-pack"
 ok(){ printf '  \033[32m✔\033[0m %s\n' "$*"; }
