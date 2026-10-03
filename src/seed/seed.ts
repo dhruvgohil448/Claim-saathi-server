@@ -2,6 +2,7 @@
 import bcrypt from 'bcryptjs';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { buildSeedData } from './data';
+import { ensureDemoPack } from '../demo/demoDocs';
 
 type J = Prisma.InputJsonValue;
 
@@ -114,5 +115,6 @@ export async function runSeed(prisma: PrismaClient) {
     { timeout: 60000, maxWait: 20000 },
   );
 
+  await ensureDemoPack(prisma);
   return { users: data.users.length, policies: data.policies.length, claims: data.claims.length, documents: data.documents.length, events: data.events.length, queries: data.queries.length, settlements: data.settlements.length, activityLogs: data.logs.length, notifications: data.notifications.length };
 }

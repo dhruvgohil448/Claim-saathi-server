@@ -12,6 +12,8 @@ import { docLabel, inr } from '../utils/format';
 import { publish, Topic } from '../realtime/hub';
 
 type Json = Prisma.InputJsonValue;
+import { DEMO_GATING, demoValidation, isDemoPackClaim, matchDemoDoc } from '../demo/demoDocs';
+
 export interface LogInput {
   claimId?: string | null;
   action: string;
@@ -131,6 +133,16 @@ export async function validateDocument(documentId: string, threshold = 0.8) {
   const claim = await loadClaim(doc.claimId);
   const buf = await readFile(doc.fileUrl);
   const ex = buf ? await extractText(buf, doc.mimeType || 'application/pdf') : { text: '', method: 'none' as const, note: 'File not found in storage' };
+  // Fixed demo pack: recognise the exact document and return its predetermined extraction + validation.
+  const demo = matchDemoDoc(buf, ex.text);
+  if (demo) {
+    const v = demoValidation(demo);
+    const type = demo.type as DocumentType;
+    await prisma.document.update({ where: { id: doc.id }, data: { type, status: 'VERIFIED', confidence: v.confidence, validationResult: { ...v, demoPack: { n: demo.n, marker: demo.marker, matchedBy: demo.matchedBy } } as unknown as Json, extractedData: { ...v.extracted, ...demo.details } as unknown as Json } });
+    if (demo.claimPatch) await prisma.claim.update({ where: { id: doc.claimId }, data: demo.claimPatch });
+    await logActivity({ claimId: doc.claimId, action: 'DOC_VERIFIED', reason: `${demo.label} auto-verified (demo pack ${String(demo.n).padStart(2, '0')}, matched by ${demo.matchedBy === 'sha256' ? 'file fingerprint' : 'document reference'}): ${demo.summary.replace(/^.*?verified:\s*/i, '')}`, confidence: v.confidence, meta: { documentId: doc.id, type, method: 'demo-pack', demoDoc: demo.n } });
+    return { doc: { ...doc, type, status: 'VERIFIED' as DocumentStatus, confidence: v.confidence }, validation: v, claim: await loadClaim(doc.claimId) };
+  }
   const v = await ai.validateDocument(ex, {
     declaredType: doc.type,
     fileName: doc.fileName,
@@ -206,9 +218,9 @@ export async function escalateToHuman(claimId: string, summary: ai.ClaimSummary,
 }
 
 /** Latest document per type → which required types are missing / flagged / verified. */
-export function docProgress<D extends { type: string; status: string }>(c: { status: string; claimType: 'CASHLESS' | 'REIMBURSEMENT'; documents: D[] }) {
+export function docProgress<D extends { type: string; status: string }>(c: { status: string; claimType: 'CASHLESS' | 'REIMBURSEMENT'; documents: D[]; policyId?: string | null }) {
   const stage = c.status === 'PREAUTH_SUBMITTED' || (c.claimType === 'CASHLESS' && !c.documents.some((d) => ['DISCHARGE_SUMMARY', 'HOSPITAL_BILL'].includes(d.type))) ? 'PREAUTH' : 'FINAL';
-  const required = requiredDocTypes(c.claimType, stage);
+  const required = isDemoPackClaim(c) ? DEMO_GATING : requiredDocTypes(c.claimType, stage);
   const latest = new Map<string, D>();
   for (const d of c.documents) latest.set(d.type, d);
   const missing = required.filter((t) => !latest.has(t));

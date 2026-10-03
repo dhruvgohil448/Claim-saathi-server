@@ -251,6 +251,33 @@ Every error looks like this:
 
 ---
 
+## 5b. Demo document pack (fixed demo flow)
+
+A fixed set of 7 PDFs (`claimsathi-server/demo-pack/`, also `demo-pack.zip`) for one consistent demo patient. Their text never changes. The **server** recognises each exact file and returns predetermined extraction and validation results, so the live demo is identical every time. The app only uploads; nothing special is needed on the client.
+
+**Demo login:** phone **9999999999**, OTP **111000** → Rohan Verma (profile and bank already complete).
+**Policy:** `CS-DEMO-POL-2026`, Saathi Health Insurance (Demo), sum insured ₹5,00,000, room rent ₹4,000/day, 10% co-pay, valid 01-01-2026 to 31-12-2026.
+**Case:** Sunrise Multispeciality Hospital, Mumbai · acute appendicitis, laparoscopic appendectomy · admitted 24-09-2026, discharged 27-09-2026 · bill ₹84,200.
+
+How matching works: the SHA-256 of the file bytes, or as a fallback the `CS-DEMO-DOC-0N` reference printed on each page (so renamed or re-saved copies still match). A recognised file gets **its type set by the server** (any client `type` is overridden), status `VERIFIED`, confidence `0.98`, and all checks passing. `extractedData` holds the values exactly as printed. Any other file goes through the normal checker.
+
+| # | File | Server sets | Effect on the claim |
+|---|---|---|---|
+| 1 | `01_Health_Card.pdf` | `HEALTH_CARD` · member SHI-DEMO-0001-01, validity, limits | 1/7 verified, status `DOCS_PENDING` |
+| 2 | `02_ID_Proof_Aadhaar.pdf` | `ID_PROOF` · masked Aadhaar XXXX XXXX 4821 | 2/7 |
+| 3 | `03_Claim_Form.pdf` | `CLAIM_FORM` · ₹84,200 claimed, signed 28-09-2026 | fills hospital, admission/discharge dates, diagnosis, treatment |
+| 4 | `04_Hospital_Bill.pdf` | `HOSPITAL_BILL` · 9 line items, total ₹84,200, room ₹5,000/day × 3 | fills `billAmount`, `billItems`, `roomRentPerDay`, `days` |
+| 5 | `05_Discharge_Summary.pdf` | `DISCHARGE_SUMMARY` · acute appendicitis (K35.8), lap. appendectomy | confirms diagnosis and dates |
+| 6 | `06_Lab_Report.pdf` | `LAB_REPORT` · WBC 14,800, CRP 48, USG inflamed appendix | 6/7 → claim **UNDER_REVIEW**, AI flags **"Payment receipt required"**, the ops bell says "raise a query", settlement estimate ready |
+| – | *(ops, dashboard)* | Claim detail → Raise query, requested doc **Payment receipt** | claim `QUERY_RAISED`, customer notified |
+| 7 | `07_Payment_Receipt.pdf` (as the query reply, `POST /queries/:id/respond`, or as a normal upload) | `PAYMENT_RECEIPT` · ₹84,200 by UPI, balance nil | query **CLOSED**, 7/7 verified, claim **NEEDS_HUMAN** with the AI suggestion "approve ₹62,748" |
+| – | *(ops)* | Approve → Settle | `APPROVED` → `SETTLED`, settlement `PAID` with a demo UTR |
+
+Deterministic settlement: bill ₹84,200 − non-payable items ₹1,000 − proportionate room-rent deduction ₹13,480 (room ₹5,000 vs ₹4,000 limit, so associated charges are paid at 80%) − 10% co-pay ₹6,972 = **₹62,748**.
+The checklist for this claim lists all 7 documents as required. Until 07 is uploaded it shows the warning "Payment receipt required". E2E: `./scripts/e2e-demo-pack.sh` (runs through the tunnel and deletes only the test claim afterwards; the demo customer and policy are kept and re-created automatically on server start or reseed).
+
+---
+
 ## 6. ANDROID (Kotlin + Jetpack Compose)
 
 ### 6.1 Stack

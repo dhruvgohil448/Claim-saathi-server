@@ -16,12 +16,16 @@ const TERMINAL = ['APPROVED', 'REJECTED', 'SETTLED', 'NEEDS_HUMAN'];
 
 // Serialize work per claim so two uploads at once don't race.
 const locks = new Map<string, Promise<unknown>>();
+import { isDemoPackClaim } from '../demo/demoDocs';
 function withLock<T>(claimId: string, fn: () => Promise<T>): Promise<T> {
   const prev = locks.get(claimId) ?? Promise.resolve();
   const next = prev.then(fn, fn);
   locks.set(claimId, next.catch(() => undefined));
   return next;
 }
+
+/** Resolves once every queued agent step for this claim (e.g. the assessment after the last document) has finished. */
+export const agentIdle = (claimId: string) => withLock(claimId, async () => undefined);
 
 // ---------- policy.uploaded ----------
 async function onPolicyUploaded({ policyId, userId }: { policyId: string; userId: string }) {
@@ -137,7 +141,7 @@ async function evaluate(claimId: string, afterUpload: boolean) {
   }
   if (prog.missing.length) {
     const open = c.queries.find((q) => q.status === 'OPEN');
-    if (!open && (afterUpload || c.documents.length >= 3) && c.documents.some((d) => ['DISCHARGE_SUMMARY', 'HOSPITAL_BILL', 'LAB_REPORT', 'PHARMACY_BILL', 'PRESCRIPTION'].includes(d.type))) {
+    if (!open && !isDemoPackClaim(c) && (afterUpload || c.documents.length >= 3) && c.documents.some((d) => ['DISCHARGE_SUMMARY', 'HOSPITAL_BILL', 'LAB_REPORT', 'PHARMACY_BILL', 'PRESCRIPTION'].includes(d.type))) {
       const { message } = await ai.draftQueryMessage(prog.missing, { patientName: c.patientName, hospital: c.hospital, claimNumber: c.claimNumber });
       await tools.raiseQuery(claimId, message, prog.missing.length === 1 ? (prog.missing[0] as DocumentType) : null);
     } else if (c.status === 'CREATED' && afterUpload) {
@@ -164,6 +168,18 @@ async function assess(claimId: string) {
   if (TERMINAL.includes(c.status)) return;
   if (c.status !== 'UNDER_REVIEW')
     await tools.updateClaimStatus(claimId, 'UNDER_REVIEW', { description: 'All required documents verified. AI submitted the claim for assessment.', action: 'DOCS_COMPLETE', confidence: 0.95 });
+  const demoPack = isDemoPackClaim(c);
+  const receipt = c.documents.filter((d) => d.type === 'PAYMENT_RECEIPT').pop();
+  if (demoPack && receipt?.status !== 'VERIFIED') {
+    // Demo pack: documents 01-06 verified, proof of payment still missing → ops raise the query from the dashboard.
+    const cov = await tools.checkCoverage(claimId);
+    const s = await tools.calculateSettlement(claimId, 'ESTIMATED');
+    await prisma.claim.update({ where: { id: claimId }, data: { aiSummary: [`${c.patientName}, ${c.reason} at ${c.hospital}: bill ${inr(s.billAmount)}.`, `Estimated payable ${inr(s.approvedAmount)} after ${s.deductions.map((d) => `${d.label.toLowerCase()} ${inr(d.amount)}`).join(', ')}.`, 'Payment receipt required before approval.'].join('\n'), aiSuggestion: { decision: 'QUERY', amount: s.approvedAmount, reason: 'Payment receipt required for a reimbursement payout' }, aiConfidence: cov.covered ? 0.96 : 0.6 } });
+    await tools.logActivity({ claimId, action: 'RECEIPT_REQUIRED', reason: `Payment receipt required: 6 of 7 documents verified, but there is no proof that the ${inr(s.billAmount)} bill was paid. Raise a query to the customer for the payment receipt.`, confidence: 0.96, meta: { requestedDocType: 'PAYMENT_RECEIPT' } });
+    if (!c.queries.some((q) => q.status !== 'CLOSED' && q.requestedDocType === 'PAYMENT_RECEIPT'))
+      await tools.notifyOps({ title: `${c.claimNumber}: payment receipt required`, body: `${c.patientName}'s documents 01-06 are verified (estimate ${inr(s.approvedAmount)}). Raise a query for the payment receipt.`, type: 'ACTION_REQUIRED', claimId });
+    return;
+  }
   for (const q of c.queries.filter((x) => x.status !== 'CLOSED')) await tools.closeQuery(q.id, 'All documents are now verified, so the open query was closed.');
   const cov = await tools.checkCoverage(claimId);
   const s = await tools.calculateSettlement(claimId, 'ESTIMATED');
@@ -177,6 +193,7 @@ async function assess(claimId: string) {
   if (confidence < env.autoVerifyConfidence) reasons.push(`AI confidence ${confidence} is below ${env.autoVerifyConfidence}`);
   if (amount > env.escalationAmount) reasons.push(`claim amount ${inr(amount)} is above ${inr(env.escalationAmount)}`);
   if (c.riskLevel === 'HIGH') reasons.push('high-risk claim');
+  if (demoPack) reasons.push(`all 7 demo-pack documents verified; AI recommends approving ${inr(s.approvedAmount)}, final sign-off by the claims team`);
 
   const summary = await ai.summarizeClaim(summaryInput(c, s, cov, [], confidence));
   await prisma.claim.update({ where: { id: claimId }, data: { aiSummary: summary.summary.join('\n'), aiSuggestion: { decision: summary.suggestedDecision, amount: summary.suggestedAmount, reason: summary.reason }, aiConfidence: confidence } });

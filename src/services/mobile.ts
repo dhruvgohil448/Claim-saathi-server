@@ -77,15 +77,17 @@ export function analyzePolicy(p: Policy) {
 }
 export type PolicyAnalysis = ReturnType<typeof analyzePolicy>;
 
+import { isDemoPackClaim } from '../demo/demoDocs';
 // ---------------- Checklist ----------------
 type DocLite = { id: string; type: string; status: string; fileName?: string; validationResult?: Prisma.JsonValue | null; createdAt?: Date };
-type ClaimLite = { id: string; status: string; claimType: 'CASHLESS' | 'REIMBURSEMENT'; documents: DocLite[] };
+type ClaimLite = { id: string; status: string; claimType: 'CASHLESS' | 'REIMBURSEMENT'; documents: DocLite[]; policyId?: string | null };
 const appStatus = (s?: string) => (!s ? 'missing' : s === 'VERIFIED' ? 'verified' : s === 'UPLOADED' ? 'uploaded' : 'rejected');
 
 export function appChecklist(c: ClaimLite) {
   const prog = docProgress(c);
   // Reimbursement payouts also need proof of payment once the final bill is in.
-  const extra = c.claimType === 'REIMBURSEMENT' && prog.stage === 'FINAL' ? ['PAYMENT_RECEIPT'] : [];
+  const demo = isDemoPackClaim(c);
+  const extra = demo || (c.claimType === 'REIMBURSEMENT' && prog.stage === 'FINAL') ? ['PAYMENT_RECEIPT'] : [];
   const types = [...prog.required, ...extra.filter((t) => !prog.required.includes(t))];
   const latest = new Map<string, DocLite>();
   for (const d of c.documents) latest.set(d.type, d);
@@ -93,7 +95,7 @@ export function appChecklist(c: ClaimLite) {
     const d = latest.get(t);
     const v = asObj<DocValidation>(d?.validationResult ?? null);
     return {
-      type: t, label: docLabel(t), required: prog.required.includes(t), status: appStatus(d?.status), rawStatus: d?.status ?? null,
+      type: t, label: docLabel(t), required: prog.required.includes(t) || demo, status: appStatus(d?.status), rawStatus: d?.status ?? null,
       documentId: d?.id ?? null, fileName: d?.fileName ?? null, confidence: v?.confidence ?? null,
       reason: d && d.status !== 'VERIFIED' ? v?.issues?.[0]?.message ?? null : null, fix: d && d.status !== 'VERIFIED' ? v?.fix ?? null : null,
     };

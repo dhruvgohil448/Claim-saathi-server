@@ -15,7 +15,7 @@ import { rerunAgent } from '../agent/claimAgent';
 import { inr } from '../utils/format';
 import { assertOtp } from '../services/otp';
 import { appChecklist, buildPdf, stepper, uploadChecks } from '../services/mobile';
-import { processDocument } from '../agent/claimAgent';
+import { agentIdle, processDocument } from '../agent/claimAgent';
 import { DocValidation } from '../services/ai.service';
 import { fmtDate, docLabel } from '../utils/format';
 import { claimScope } from '../services/demo';
@@ -347,10 +347,12 @@ r.get('/:id/documents', async (req, res) => {
 /** Run the Claim Agent's document check now and return per-check results (also stored on the document). */
 export async function validateNow(claimId: string, documentId: string, answeredQueryId?: string) {
   const { doc, validation } = await processDocument(claimId, documentId, answeredQueryId);
+  await agentIdle(claimId); // include follow-up steps (e.g. submitted for review) in the response
   const claim = await prisma.claim.findUniqueOrThrow({ where: { id: claimId }, include: { documents: { orderBy: { createdAt: 'asc' } } } });
   const checklist = appChecklist(claim);
   const result = uploadChecks(doc.type, doc.status, validation as DocValidation, checklist);
-  const stored = await prisma.document.update({ where: { id: documentId }, data: { validationResult: { ...(validation as object), appChecks: result.checks, warnings: result.warnings } as Prisma.InputJsonValue } });
+  const prev = await prisma.document.findUniqueOrThrow({ where: { id: documentId }, select: { validationResult: true } });
+  const stored = await prisma.document.update({ where: { id: documentId }, data: { validationResult: { ...((prev.validationResult as object) ?? {}), ...(validation as object), appChecks: result.checks, warnings: result.warnings } as Prisma.InputJsonValue } });
   return { ...stored, validation: result, checklist, claimStatus: claim.status };
 }
 
