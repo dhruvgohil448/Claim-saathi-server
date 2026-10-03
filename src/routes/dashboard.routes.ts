@@ -12,6 +12,7 @@ import { PLACEHOLDER_EMAIL_DOMAIN } from '../services/otp';
 import { env, llmEnabled } from '../config/env';
 import { storageMode } from '../services/storage';
 import { clientCount, publish } from '../realtime/hub';
+import { claimScope, optionalClaimScope, relClaimScope, setShowDemoData, showDemoData } from '../services/demo';
 
 const r = Router();
 r.use(auth, staffOnly);
@@ -24,13 +25,14 @@ r.get('/analytics/overview', async (_req, res) => {
   const now = Date.now();
   const wk = new Date(now - 7 * DAY);
   const pwk = new Date(now - 14 * DAY);
+  const [cw, ow, rw] = await Promise.all([claimScope(), optionalClaimScope(), relClaimScope()]);
   const [claims, openQueries, logs7, logsPrev7, escalatedIds, docs] = await Promise.all([
-    prisma.claim.findMany({ select: { id: true, status: true, billAmount: true, estimatedAmount: true, createdAt: true, settlement: { select: { approvedAmount: true, status: true } } } }),
-    prisma.query.count({ where: { status: 'OPEN' } }),
-    prisma.activityLog.groupBy({ by: ['actor'], where: { createdAt: { gte: wk } }, _count: true }),
-    prisma.activityLog.groupBy({ by: ['actor'], where: { createdAt: { gte: pwk, lt: wk } }, _count: true }),
-    prisma.activityLog.findMany({ where: { action: 'ESCALATED' }, select: { claimId: true }, distinct: ['claimId'] }),
-    prisma.document.groupBy({ by: ['status'], _count: true }),
+    prisma.claim.findMany({ where: cw, select: { id: true, status: true, billAmount: true, estimatedAmount: true, createdAt: true, settlement: { select: { approvedAmount: true, status: true } } } }),
+    prisma.query.count({ where: { status: 'OPEN', ...rw } }),
+    prisma.activityLog.groupBy({ by: ['actor'], where: { createdAt: { gte: wk }, ...ow }, _count: true }),
+    prisma.activityLog.groupBy({ by: ['actor'], where: { createdAt: { gte: pwk, lt: wk }, ...ow }, _count: true }),
+    prisma.activityLog.findMany({ where: { action: 'ESCALATED', ...ow }, select: { claimId: true }, distinct: ['claimId'] }),
+    prisma.document.groupBy({ by: ['status'], where: rw, _count: true }),
   ]);
   const value = (c: (typeof claims)[number]) => c.billAmount ?? c.estimatedAmount ?? 0;
   const by = (s: string[]) => claims.filter((c) => s.includes(c.status));
@@ -42,7 +44,7 @@ r.get('/analytics/overview', async (_req, res) => {
   const humanActions = (g: typeof logs7) => g.find((x) => x.actor === 'HUMAN')?._count ?? 0;
   const thisWeek = claims.filter((c) => c.createdAt >= wk).length;
   const lastWeek = claims.filter((c) => c.createdAt >= pwk && c.createdAt < wk).length;
-  const confAgg = await prisma.activityLog.aggregate({ _avg: { confidence: true }, where: { actor: 'AI', confidence: { not: null } } });
+  const confAgg = await prisma.activityLog.aggregate({ _avg: { confidence: true }, where: { actor: 'AI', confidence: { not: null }, ...ow } });
   const approvedValue = claims.reduce((s, c) => s + (['APPROVED', 'SETTLED'].includes(c.status) ? c.settlement?.approvedAmount ?? 0 : 0), 0);
   res.json({
     totalClaims: claims.length,
@@ -64,6 +66,7 @@ r.get('/analytics/overview', async (_req, res) => {
     humanActions7d: humanActions(logs7),
     avgConfidence: Number((confAgg._avg.confidence ?? 0).toFixed(2)),
     documents: Object.fromEntries(docs.map((d) => [d.status, d._count])),
+    showDemoData: await showDemoData(),
   });
 });
 
@@ -71,12 +74,13 @@ r.get('/analytics/charts', async (req, res) => {
   const days = Math.min(60, Number(req.query.days) || 14);
   const since = new Date(Date.now() - (days - 1) * DAY);
   since.setHours(0, 0, 0, 0);
+  const [cw, ow, rw] = await Promise.all([claimScope(), optionalClaimScope(), relClaimScope()]);
   const [claims, logs, settlements, docs, decisions] = await Promise.all([
-    prisma.claim.findMany({ select: { id: true, status: true, createdAt: true, claimType: true, hospital: true, billAmount: true, estimatedAmount: true } }),
-    prisma.activityLog.findMany({ where: { createdAt: { gte: since } }, select: { createdAt: true, actor: true, action: true } }),
-    prisma.settlement.findMany({ include: { claim: { select: { claimNumber: true, patientName: true, status: true } } } }),
-    prisma.document.groupBy({ by: ['status'], _count: true }),
-    prisma.claimEvent.findMany({ where: { status: { in: ['APPROVED', 'REJECTED', 'SETTLED'] } }, orderBy: { createdAt: 'asc' }, select: { claimId: true, createdAt: true } }),
+    prisma.claim.findMany({ where: cw, select: { id: true, status: true, createdAt: true, claimType: true, hospital: true, billAmount: true, estimatedAmount: true } }),
+    prisma.activityLog.findMany({ where: { createdAt: { gte: since }, ...ow }, select: { createdAt: true, actor: true, action: true } }),
+    prisma.settlement.findMany({ where: rw, include: { claim: { select: { claimNumber: true, patientName: true, status: true } } } }),
+    prisma.document.groupBy({ by: ['status'], where: rw, _count: true }),
+    prisma.claimEvent.findMany({ where: { status: { in: ['APPROVED', 'REJECTED', 'SETTLED'] }, ...rw }, orderBy: { createdAt: 'asc' }, select: { claimId: true, createdAt: true } }),
   ]);
   // Turnaround: hours from claim creation to its first final decision (approved / rejected / settled), by IST day of decision.
   const created = new Map(claims.map((c) => [c.id, c.createdAt]));
@@ -150,9 +154,21 @@ r.get('/config', (_req, res) => {
   });
 });
 
+r.get('/config/demo', async (_req, res) => {
+  const [show, demoClaims, liveClaims] = await Promise.all([showDemoData(), prisma.claim.count({ where: { isDemo: true } }), prisma.claim.count({ where: { isDemo: false } })]);
+  res.json({ showDemoData: show, demoClaims, liveClaims });
+});
+r.put('/config/demo', requireRole('ADMIN', 'OPS'), async (req, res) => {
+  const { showDemoData: v } = z.object({ showDemoData: z.boolean() }).parse(req.body);
+  await setShowDemoData(v);
+  await tools.logActivity({ action: 'DEMO_DATA_TOGGLED', reason: `${req.user!.name} turned demo data ${v ? 'on' : 'off'} on the dashboard.`, actor: 'HUMAN', actorName: req.user!.name });
+  publish({ topic: 'claim' });
+  res.json({ showDemoData: v });
+});
+
 r.get('/escalations', async (_req, res) => {
   const claims = await prisma.claim.findMany({
-    where: { OR: [{ status: 'NEEDS_HUMAN' }, { status: 'PREAUTH_SUBMITTED', aiSuggestion: { not: Prisma.DbNull } }] },
+    where: { AND: [await claimScope(), { OR: [{ status: 'NEEDS_HUMAN' }, { status: 'PREAUTH_SUBMITTED', aiSuggestion: { not: Prisma.DbNull } }] }] },
     include: { ...claimListInclude, documents: { select: { id: true, type: true, status: true, confidence: true } }, settlement: true, activities: { where: { action: { in: ['ESCALATED', 'PREAUTH_NOTE_DRAFTED'] } }, orderBy: { createdAt: 'desc' }, take: 1 } },
     orderBy: { lastActivityAt: 'desc' },
   });
@@ -167,7 +183,7 @@ r.get('/activity', async (req, res) => {
   const q = z
     .object({ claimId: z.string().optional(), actor: z.nativeEnum(ActorType).optional(), limit: z.coerce.number().int().min(1).max(200).default(60), before: z.coerce.date().optional(), since: z.coerce.date().optional() })
     .parse(req.query);
-  const where: Prisma.ActivityLogWhereInput = {};
+  const where: Prisma.ActivityLogWhereInput = { ...(await optionalClaimScope()) };
   if (q.claimId) where.claimId = q.claimId;
   if (q.actor) where.actor = q.actor;
   if (q.before || q.since) where.createdAt = { ...(q.before ? { lt: q.before } : {}), ...(q.since ? { gt: q.since } : {}) };
@@ -195,7 +211,7 @@ r.get('/search', async (req, res) => {
   if (s.length < 2) return void res.json({ claims: [], users: [], policies: [] });
   const ci = { contains: s, mode: 'insensitive' as const };
   const [claims, users, policies] = await Promise.all([
-    prisma.claim.findMany({ where: { OR: [{ claimNumber: ci }, { patientName: ci }, { hospital: ci }, { reason: ci }] }, select: { id: true, claimNumber: true, patientName: true, hospital: true, status: true }, take: 6 }),
+    prisma.claim.findMany({ where: { ...(await claimScope()), OR: [{ claimNumber: ci }, { patientName: ci }, { hospital: ci }, { reason: ci }] }, select: { id: true, claimNumber: true, patientName: true, hospital: true, status: true }, take: 6 }),
     prisma.user.findMany({ where: { OR: [{ name: ci }, { email: ci }] }, select: { id: true, name: true, email: true, role: true }, take: 4 }),
     prisma.policy.findMany({ where: { OR: [{ policyNumber: ci }, { user: { name: ci } }] }, select: { id: true, policyNumber: true, user: { select: { name: true } } }, take: 4 }),
   ]);

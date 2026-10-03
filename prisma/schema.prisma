@@ -169,6 +169,7 @@ model Claim {
   aiConfidence      Float?
   riskLevel         String? // LOW | MEDIUM | HIGH
   riskFlags         Json? // string[]
+  isDemo            Boolean        @default(false) // seeded sample data (hidden when showDemoData is off)
   reminderCount     Int            @default(0)
   lastActivityAt    DateTime       @default(now())
   createdAt         DateTime       @default(now())
@@ -182,6 +183,7 @@ model Claim {
 
   @@index([status])
   @@index([userId])
+  @@index([isDemo])
 }
 
 model Document {
@@ -282,4 +284,11 @@ model Notification {
   createdAt DateTime         @default(now())
 
   @@index([userId, read])
+}
+
+/// Global switches shared by every dashboard (e.g. showDemoData).
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @default(now()) @updatedAt
 }

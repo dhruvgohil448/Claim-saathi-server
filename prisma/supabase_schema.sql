@@ -299,3 +299,10 @@ ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "dob" TIMESTAMP(3), ADD COLUMN IF NO
 ALTER TABLE "Policy" ADD COLUMN IF NOT EXISTS "members" JSONB;
 ALTER TABLE "Policy" ADD COLUMN IF NOT EXISTS "analysis" JSONB, ADD COLUMN IF NOT EXISTS "analyzedAt" TIMESTAMP(3);
 ALTER TABLE "Claim" ADD COLUMN IF NOT EXISTS "patientDetails" JSONB;
+
+-- Demo data switch
+ALTER TABLE "Claim" ADD COLUMN IF NOT EXISTS "isDemo" boolean NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS "Claim_isDemo_idx" ON "Claim"("isDemo");
+CREATE TABLE IF NOT EXISTS "AppSetting" ("key" text PRIMARY KEY, "value" jsonb NOT NULL, "updatedAt" timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
+ALTER TABLE "AppSetting" ENABLE ROW LEVEL SECURITY;
+INSERT INTO "AppSetting"("key","value") VALUES ('showDemoData','true'::jsonb) ON CONFLICT ("key") DO NOTHING;

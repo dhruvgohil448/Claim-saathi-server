@@ -1,16 +1,18 @@
 /** Unauthenticated, aggregate-only numbers for the login screen. No names, amounts or contact details. */
 import { Router } from 'express';
 import { prisma } from '../utils/prisma';
+import { claimScope, optionalClaimScope } from '../services/demo';
 
 const r = Router();
 
 r.get('/summary', async (_req, res) => {
+  const [cw, ow] = await Promise.all([claimScope(), optionalClaimScope()]);
   const [claims, escalated, aiLogs, explained, recent, docPairs] = await Promise.all([
-    prisma.claim.findMany({ select: { id: true, status: true } }),
-    prisma.activityLog.findMany({ where: { action: 'ESCALATED' }, select: { claimId: true }, distinct: ['claimId'] }),
-    prisma.activityLog.count({ where: { actor: 'AI' } }),
-    prisma.activityLog.count({ where: { actor: 'AI', NOT: { reason: '' } } }),
-    prisma.activityLog.findMany({ where: { actor: 'AI', claimId: { not: null }, action: { notIn: ['NOTIFIED_CUSTOMER'] } }, orderBy: { createdAt: 'desc' }, take: 3, select: { id: true, action: true, confidence: true, createdAt: true, claim: { select: { claimNumber: true } } } }),
+    prisma.claim.findMany({ where: cw, select: { id: true, status: true } }),
+    prisma.activityLog.findMany({ where: { action: 'ESCALATED', ...ow }, select: { claimId: true }, distinct: ['claimId'] }),
+    prisma.activityLog.count({ where: { actor: 'AI', ...ow } }),
+    prisma.activityLog.count({ where: { actor: 'AI', NOT: { reason: '' }, ...ow } }),
+    prisma.activityLog.findMany({ where: { actor: 'AI', claimId: { not: null }, ...(cw.isDemo === false ? { claim: { isDemo: false } } : {}), action: { notIn: ['NOTIFIED_CUSTOMER'] } }, orderBy: { createdAt: 'desc' }, take: 3, select: { id: true, action: true, confidence: true, createdAt: true, claim: { select: { claimNumber: true } } } }),
     prisma.$queryRaw<{ seconds: number | null; n: bigint }[]>`
       SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (v."createdAt" - u."createdAt"))) AS seconds, count(*) AS n
       FROM "ActivityLog" u JOIN "ActivityLog" v ON v.meta->>'documentId' = u.meta->>'documentId'

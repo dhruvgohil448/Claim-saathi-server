@@ -60,7 +60,7 @@ async function seedSql() {
     id: q(c.id), claimNumber: q(c.claimNumber), userId: q(c.userId), policyId: q(c.policyId), patientName: q(c.patientName), hospital: q(c.hospital), hospitalCity: q(c.hospitalCity), isNetworkHospital: 'true', reason: q(c.reason), treatment: q(c.treatment),
     claimType: `${q(c.claimType)}::"ClaimType"`, admissionType: `${q(c.admissionType)}::"AdmissionType"`, isAccident: q(c.isAccident), admissionDate: q(c.admissionDate), dischargeDate: q(c.dischargeDate), roomType: q(c.roomType), roomRentPerDay: q(c.roomRentPerDay), days: q(c.days),
     estimatedAmount: q(c.estimatedAmount), billAmount: q(c.billAmount), billItems: q(c.billItems), status: `${q(c.status)}::"ClaimStatus"`, aiSummary: q(c.aiSummary), aiSuggestion: q(c.aiSuggestion), aiConfidence: q(c.aiConfidence), riskLevel: q(c.riskLevel), riskFlags: q(c.riskFlags),
-    reminderCount: q(c.reminderCount), lastActivityAt: ago(c.lastActivityAgo), createdAt: ago(c.ago), updatedAt: ago(c.lastActivityAgo),
+    reminderCount: q(c.reminderCount), isDemo: q(true), lastActivityAt: ago(c.lastActivityAgo), createdAt: ago(c.ago), updatedAt: ago(c.lastActivityAgo),
   }))));
   parts.push(insert('Document', d.documents.map((x) => ({
     id: q(x.id), claimId: q(x.claimId), type: `${q(x.type)}::"DocumentType"`, fileName: q(x.fileName), fileUrl: q(x.fileUrl), mimeType: q(x.mimeType), size: q(x.size), status: `${q(x.status)}::"DocumentStatus"`, confidence: q(x.confidence),

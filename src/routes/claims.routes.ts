@@ -18,6 +18,7 @@ import { appChecklist, buildPdf, stepper, uploadChecks } from '../services/mobil
 import { processDocument } from '../agent/claimAgent';
 import { DocValidation } from '../services/ai.service';
 import { fmtDate, docLabel } from '../utils/format';
+import { claimScope } from '../services/demo';
 
 const r = Router();
 // The app opens the summary PDF in a browser/share sheet, which cannot set headers: allow ?token= for that route only.
@@ -90,6 +91,7 @@ r.get('/', async (req, res) => {
   const q = z.object({ status: z.string().optional(), search: z.string().optional(), type: z.string().optional(), limit: z.coerce.number().int().min(1).max(200).default(100) }).parse(req.query);
   const where: Prisma.ClaimWhereInput = {};
   if (!isStaff(req)) where.userId = req.user!.id;
+  else Object.assign(where, await claimScope());
   if (q.status && q.status !== 'ALL') where.status = { in: q.status.split(',') as ClaimStatus[] };
   if (q.type && q.type !== 'ALL') where.claimType = q.type as 'CASHLESS' | 'REIMBURSEMENT';
   if (q.search) {

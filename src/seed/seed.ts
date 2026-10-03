@@ -78,6 +78,7 @@ export async function runSeed(prisma: PrismaClient) {
           riskLevel: c.riskLevel,
           riskFlags: c.riskFlags as J,
           reminderCount: c.reminderCount,
+          isDemo: true,
           lastActivityAt: at(c.lastActivityAgo),
           createdAt: at(c.ago),
           updatedAt: at(c.lastActivityAgo),
