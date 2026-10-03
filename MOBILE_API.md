@@ -157,7 +157,7 @@ Bank accounts, balances and monthly expenses are **fixed demo values from the se
 ```
 
 ### 9.5 Chat: finance answers, suggestions and cards
-`POST /ai/chat { message, claimId? }` now always returns `suggestions[]` (up to 5 chips) and `cards[]`. Bank and money questions ("total balance", "monthly expenses", "how much did I spend on medical", "out-of-pocket vs insurer paid", "which payouts did I receive") return `intent: FINANCE_BALANCE|FINANCE_EXPENSES|FINANCE_MEDICAL|FINANCE_OUT_OF_POCKET|FINANCE_PAYOUTS|FINANCE` with cards:
+`GET /ai/suggestions` → `{ greeting, suggestions[] }` for the empty Chat screen. `POST /ai/chat { message, claimId? }` now always returns `suggestions[]` (up to 5 chips) and `cards[]`. Bank and money questions ("total balance", "monthly expenses", "how much did I spend on medical", "out-of-pocket vs insurer paid", "which payouts did I receive") return `intent: FINANCE_BALANCE|FINANCE_EXPENSES|FINANCE_MEDICAL|FINANCE_OUT_OF_POCKET|FINANCE_PAYOUTS|FINANCE` with cards:
 - `{ type: "accounts", title, total, accounts[] }`
 - `{ type: "expenses", title, total, month, categories[] }`
 - `{ type: "medical", title, totalMedicalSpend, insurerPaid, outOfPocket, insurerPaidPercent }`

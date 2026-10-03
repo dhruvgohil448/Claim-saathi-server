@@ -102,7 +102,7 @@ async function chatCore(user: { id: string; role: string }, message: string, cla
   return say('POLICY_SUMMARY', a.whatIsCovered, ['Policy summary'], claim ? ['Where is my claim?', 'Which documents are still pending?', 'How much will I get?'] : ['What is not covered?', 'What is my room rent limit?']);
 }
 
-const BASE_SUGGESTIONS = ['Where is my claim?', 'How much will I get?', 'Which documents are still pending?', 'What is my total balance?', 'How much did I spend on medical?', 'What is not covered?'];
+export const BASE_SUGGESTIONS = ['Where is my claim?', 'How much will I get?', 'Which documents are still pending?', 'What is my total balance?', 'How much did I spend on medical?', 'What is not covered?'];
 
 /**
  * POST /api/ai/chat. Bank / finance questions are answered from the server's fixed demo finance data
