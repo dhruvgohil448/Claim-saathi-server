@@ -1,3 +1,4 @@
+import { relClaimScope } from '../services/demo';
 import { Router, Request } from 'express';
 import fs from 'fs';
 import { z } from 'zod';
@@ -44,7 +45,7 @@ async function getDocFor(req: Request) {
 
 r.get('/', staffOnly, async (req, res) => {
   const q = z.object({ status: z.string().optional(), type: z.string().optional(), search: z.string().optional() }).parse(req.query);
-  const where: Prisma.DocumentWhereInput = {};
+  const where: Prisma.DocumentWhereInput = { ...(await relClaimScope()) };
   if (q.status && q.status !== 'ALL') where.status = { in: q.status.split(',') as DocumentStatus[] };
   if (q.type && q.type !== 'ALL') where.type = q.type as DocumentType;
   if (q.search) where.OR = [{ fileName: { contains: q.search, mode: 'insensitive' } }, { claim: { claimNumber: { contains: q.search, mode: 'insensitive' } } }, { claim: { patientName: { contains: q.search, mode: 'insensitive' } } }];

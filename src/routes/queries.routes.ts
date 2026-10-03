@@ -1,3 +1,4 @@
+import { relClaimScope } from '../services/demo';
 import { Router } from 'express';
 import { z } from 'zod';
 import { Prisma, QueryStatus } from '@prisma/client';
@@ -18,6 +19,7 @@ r.get('/', async (req, res) => {
   const where: Prisma.QueryWhereInput = {};
   if (status && status !== 'ALL') where.status = { in: status.split(',') as QueryStatus[] };
   if (!isStaff(req)) where.claim = { userId: req.user!.id };
+  else Object.assign(where, await relClaimScope());
   res.json(
     await prisma.query.findMany({
       where,

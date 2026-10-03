@@ -4,6 +4,7 @@ import morgan from 'morgan';
 import api from './routes';
 import { env } from './config/env';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
+import { n8nRouter, registerN8n } from './lib/n8n';
 
 export function createApp() {
   const app = express();
@@ -13,6 +14,8 @@ export function createApp() {
   app.use(express.json({ limit: '2mb' }));
   app.use(morgan(env.nodeEnv === 'production' ? 'tiny' : 'dev', { skip: (req) => req.path === '/api/health' }));
   app.get('/', (_req, res) => res.json({ name: 'Claim Saathi API', docs: '/api/health' }));
+  registerN8n();
+  app.use('/api/integrations/n8n', n8nRouter);
   app.use('/api', api);
   app.use(notFoundHandler);
   app.use(errorHandler);

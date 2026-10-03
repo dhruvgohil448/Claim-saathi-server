@@ -195,6 +195,7 @@ r.get('/activity', async (req, res) => {
 
 r.get('/users', async (_req, res) => {
   const users = await prisma.user.findMany({
+    where: (await showDemoData()) ? {} : { NOT: { claims: { some: { isDemo: true } } } },
     select: { id: true, name: true, email: true, phone: true, role: true, city: true, dob: true, gender: true, bankAccount: true, lastLoginAt: true, createdAt: true, _count: { select: { claims: true, policies: true } } },
     orderBy: [{ role: 'desc' }, { createdAt: 'desc' }],
   });

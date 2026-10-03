@@ -2,6 +2,7 @@
  * Agent tools: plain functions that change the database through Prisma.
  * Every tool writes an ActivityLog row (actor AI unless told otherwise).
  */
+import { n8nOnStatus } from '../lib/n8n';
 import { ActorType, ClaimStatus, DocumentStatus, DocumentType, NotificationType, Prisma, SettlementStatus } from '@prisma/client';
 import { prisma } from '../utils/prisma';
 import * as ai from '../services/ai.service';
@@ -77,6 +78,7 @@ export async function updateClaimStatus(
   const claim = await prisma.claim.update({ where: { id: claimId }, data: { status, lastActivityAt: new Date(), ...(status === 'NEEDS_HUMAN' ? {} : {}) } });
   await prisma.claimEvent.create({ data: { claimId, status, title: o.title ?? STATUS_TITLES[status], description: o.description, actor: o.actor ?? 'AI' } });
   await logActivity({ claimId, action: o.action ?? `STATUS_${status}`, reason: o.description, confidence: o.confidence, actor: o.actor ?? 'AI', actorName: o.actorName });
+  n8nOnStatus(claimId, status);
   return claim;
 }
 

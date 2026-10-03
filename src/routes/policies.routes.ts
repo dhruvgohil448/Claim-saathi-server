@@ -1,3 +1,4 @@
+import { showDemoData } from '../services/demo';
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../utils/prisma';
@@ -18,7 +19,7 @@ r.use(auth);
 r.get('/', staffOnly, async (req, res) => {
   const search = String(req.query.search ?? '').trim();
   const policies = await prisma.policy.findMany({
-    where: search ? { OR: [{ policyNumber: { contains: search, mode: 'insensitive' } }, { user: { name: { contains: search, mode: 'insensitive' } } }] } : {},
+    where: { AND: [search ? { OR: [{ policyNumber: { contains: search, mode: 'insensitive' } }, { user: { name: { contains: search, mode: 'insensitive' } } }] } : {}, (await showDemoData()) ? {} : { NOT: { claims: { some: { isDemo: true } } } }] },
     include: { user: { select: { id: true, name: true, email: true, phone: true } }, _count: { select: { claims: true } } },
     orderBy: { createdAt: 'desc' },
   });
