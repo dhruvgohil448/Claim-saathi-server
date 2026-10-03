@@ -7,3 +7,4 @@ export const badRequest = (m: string, d?: unknown) => new AppError(400, m, 'BAD_
 export const unauthorized = (m = 'Please log in') => new AppError(401, m, 'UNAUTHORIZED');
 export const forbidden = (m = 'You do not have access to this') => new AppError(403, m, 'FORBIDDEN');
 export const notFound = (m = 'Not found') => new AppError(404, m, 'NOT_FOUND');
+export const conflict = (m = 'Already exists') => new AppError(409, m, 'CONFLICT');

@@ -7,6 +7,11 @@ import { claimListInclude } from './claims.routes';
 import { runSeed } from '../seed/seed';
 import { runFollowups } from '../jobs/followup';
 import * as tools from '../tools';
+import { maskBank } from '../services/users';
+import { PLACEHOLDER_EMAIL_DOMAIN } from '../services/otp';
+import { env, llmEnabled } from '../config/env';
+import { storageMode } from '../services/storage';
+import { clientCount, publish } from '../realtime/hub';
 
 const r = Router();
 r.use(auth, staffOnly);
@@ -66,12 +71,30 @@ r.get('/analytics/charts', async (req, res) => {
   const days = Math.min(60, Number(req.query.days) || 14);
   const since = new Date(Date.now() - (days - 1) * DAY);
   since.setHours(0, 0, 0, 0);
-  const [claims, logs, settlements, docs] = await Promise.all([
-    prisma.claim.findMany({ select: { status: true, createdAt: true, claimType: true, hospital: true, billAmount: true, estimatedAmount: true } }),
+  const [claims, logs, settlements, docs, decisions] = await Promise.all([
+    prisma.claim.findMany({ select: { id: true, status: true, createdAt: true, claimType: true, hospital: true, billAmount: true, estimatedAmount: true } }),
     prisma.activityLog.findMany({ where: { createdAt: { gte: since } }, select: { createdAt: true, actor: true, action: true } }),
     prisma.settlement.findMany({ include: { claim: { select: { claimNumber: true, patientName: true, status: true } } } }),
     prisma.document.groupBy({ by: ['status'], _count: true }),
+    prisma.claimEvent.findMany({ where: { status: { in: ['APPROVED', 'REJECTED', 'SETTLED'] } }, orderBy: { createdAt: 'asc' }, select: { claimId: true, createdAt: true } }),
   ]);
+  // Turnaround: hours from claim creation to its first final decision (approved / rejected / settled), by IST day of decision.
+  const created = new Map(claims.map((c) => [c.id, c.createdAt]));
+  const firstDecision = new Map<string, Date>();
+  for (const d of decisions) if (!firstDecision.has(d.claimId)) firstDecision.set(d.claimId, d.createdAt);
+  const tat: Record<string, { date: string; totalHours: number; decided: number }> = {};
+  const allHours: number[] = [];
+  for (const [claimId, at] of firstDecision) {
+    const c = created.get(claimId);
+    if (!c) continue;
+    const h = Math.max(0, (at.getTime() - c.getTime()) / 3600000);
+    allHours.push(h);
+    const d = istDay(at);
+    tat[d] ??= { date: d, totalHours: 0, decided: 0 };
+    tat[d].totalHours += h;
+    tat[d].decided++;
+  }
+  const median = (a: number[]) => (a.length ? [...a].sort((x, y) => x - y)[Math.floor((a.length - 1) / 2)] : null);
   const statuses = ['CREATED', 'PREAUTH_SUBMITTED', 'DOCS_PENDING', 'UNDER_REVIEW', 'QUERY_RAISED', 'NEEDS_HUMAN', 'APPROVED', 'REJECTED', 'SETTLED'];
   const series: Record<string, { date: string; claims: number; aiActions: number; humanActions: number; escalations: number }> = {};
   for (let i = 0; i < days; i++) {
@@ -103,6 +126,27 @@ r.get('/analytics/charts', async (req, res) => {
     deductionsByType: Object.entries(deductionTotals).map(([label, amount]) => ({ label, amount })).sort((a, b) => b.amount - a.amount),
     documentValidation: Object.fromEntries(docs.map((d) => [d.status, d._count])),
     aiActionsByType: Object.entries(actionCounts).map(([action, count]) => ({ action, count })).sort((a, b) => b.count - a.count),
+    turnaround: {
+      decidedClaims: allHours.length,
+      avgHours: allHours.length ? Number((allHours.reduce((a, b) => a + b, 0) / allHours.length).toFixed(1)) : null,
+      medianHours: median(allHours) != null ? Number(median(allHours)!.toFixed(1)) : null,
+      perDay: Object.keys(series).map((d) => ({ date: d, decided: tat[d]?.decided ?? 0, avgHours: tat[d] ? Number((tat[d].totalHours / tat[d].decided).toFixed(1)) : null })),
+    },
+  });
+});
+
+/** Business rules the dashboard displays (escalation threshold, auto-verify confidence, follow-up cadence). */
+r.get('/config', (_req, res) => {
+  res.json({
+    escalationAmount: env.escalationAmount,
+    autoVerifyConfidence: env.autoVerifyConfidence,
+    stuckAfterMinutes: env.stuckAfterMinutes,
+    maxReminders: env.maxReminders,
+    autoSettleAfterMinutes: env.autoSettleAfterMinutes,
+    ai: llmEnabled() ? env.aiProvider : 'mock',
+    planner: env.agentPlanner,
+    storage: storageMode(),
+    liveClients: clientCount(),
   });
 });
 
@@ -133,10 +177,10 @@ r.get('/activity', async (req, res) => {
 
 r.get('/users', async (_req, res) => {
   const users = await prisma.user.findMany({
-    select: { id: true, name: true, email: true, phone: true, role: true, city: true, createdAt: true, _count: { select: { claims: true, policies: true } } },
-    orderBy: [{ role: 'desc' }, { name: 'asc' }],
+    select: { id: true, name: true, email: true, phone: true, role: true, city: true, dob: true, gender: true, bankAccount: true, lastLoginAt: true, createdAt: true, _count: { select: { claims: true, policies: true } } },
+    orderBy: [{ role: 'desc' }, { createdAt: 'desc' }],
   });
-  res.json(users);
+  res.json(users.map(({ bankAccount, ...u }) => ({ ...u, email: u.email.endsWith(`@${PLACEHOLDER_EMAIL_DOMAIN}`) ? null : u.email, bank: maskBank(bankAccount) })));
 });
 
 r.patch('/users/:id/role', requireRole('ADMIN'), async (req, res) => {
@@ -160,6 +204,7 @@ r.get('/search', async (req, res) => {
 
 r.post('/admin/reset-demo', requireRole('ADMIN'), async (_req, res) => {
   const result = await runSeed(prisma);
+  publish({ topic: 'claim' });
   res.json({ ok: true, ...result });
 });
 

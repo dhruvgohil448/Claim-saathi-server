@@ -337,7 +337,7 @@ export function mockValidate(ex: Extracted, ctx: DocContext): DocValidation {
   }
 
   let amount: number | null = null;
-  const am = flat.match(/(?:Net payable|Gross total|Total claimed|Total estimated cost|Total)\s*₹\s?([\d,]+)/i);
+  const am = flat.match(/(?:Net payable|Gross total|Total claimed|Total estimated cost|Amount paid|Total)\s*:?\s*(?:₹|Rs\.?|INR)\s?([\d,]+)/i);
   if (am) amount = money(am[1]);
   let amountConsistent: boolean | null = null;
   if (readable && ctx.declaredType === 'HOSPITAL_BILL' && amount && ctx.claimAmount) {

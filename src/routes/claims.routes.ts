@@ -13,6 +13,7 @@ import { putFile } from '../services/storage';
 import { extractText } from '../services/extract';
 import { rerunAgent } from '../agent/claimAgent';
 import { inr } from '../utils/format';
+import { assertOtp } from '../services/otp';
 
 const r = Router();
 r.use(auth);
@@ -32,7 +33,15 @@ async function getClaimFor(req: Request, id: string) {
 }
 
 const billItem = z.object({ description: z.string(), qty: z.number().positive(), rate: z.number().nonnegative(), amount: z.number().nonnegative().optional() });
-const claimInput = z.object({
+// The app may send type: PREAUTH | CASHLESS | REIMBURSEMENT (PREAUTH = cashless pre-authorisation).
+const normalizeType = (b: unknown) => {
+  if (b && typeof b === 'object' && 'type' in b && !('claimType' in b)) {
+    const t = String((b as { type: unknown }).type).toUpperCase();
+    return { ...b, claimType: t === 'PREAUTH' ? 'CASHLESS' : t };
+  }
+  return b;
+};
+const claimInputBase = z.object({
   policyId: z.string().optional(),
   hospital: z.string().min(2),
   hospitalCity: z.string().optional(),
@@ -50,7 +59,13 @@ const claimInput = z.object({
   estimatedAmount: z.number().int().nonnegative().optional(),
   billAmount: z.number().int().nonnegative().optional(),
   billItems: z.array(billItem).optional(),
+  /** Insured member the claim is for (defaults to the policy holder). */
+  patientName: z.string().trim().min(2).max(80).optional(),
+  patientDetails: z.object({ age: z.number().int().min(0).max(120).optional(), gender: z.string().max(10).optional(), relation: z.string().max(30).optional(), phone: z.string().max(20).optional() }).optional(),
+  /** Optional consent OTP from the app's "confirm & submit" step. Demo: always OTP_DEMO_CODE (111000). */
+  consentOtp: z.string().optional(),
 });
+const claimInput = { parse: (b: unknown) => claimInputBase.parse(normalizeType(b)) };
 
 async function resolvePolicy(req: Request, policyId?: string) {
   const p = policyId
@@ -103,6 +118,7 @@ r.post('/check-coverage', async (req, res) => {
 // ---- create ----
 r.post('/', async (req, res) => {
   const body = claimInput.parse(req.body);
+  if (body.consentOtp !== undefined) assertOtp(body.consentOtp);
   const p = await resolvePolicy(req, body.policyId);
   const owner = await prisma.user.findUniqueOrThrow({ where: { id: p.userId } });
   const last = await prisma.claim.findFirst({ where: { claimNumber: { startsWith: 'CLM-' } }, orderBy: { claimNumber: 'desc' } });
@@ -113,7 +129,8 @@ r.post('/', async (req, res) => {
       claimNumber: `CLM-${next}`,
       userId: owner.id,
       policyId: p.id,
-      patientName: owner.name,
+      patientName: body.patientName ?? owner.name,
+      patientDetails: body.patientDetails ?? undefined,
       hospital: body.hospital,
       hospitalCity: body.hospitalCity,
       isNetworkHospital: body.isNetworkHospital ?? true,
@@ -130,11 +147,18 @@ r.post('/', async (req, res) => {
       estimatedAmount: body.estimatedAmount ?? items?.reduce((s, i) => s + i.amount, 0),
       billAmount: body.billAmount ?? (body.claimType === 'REIMBURSEMENT' ? items?.reduce((s, i) => s + i.amount, 0) : undefined),
       billItems: items,
-      events: { create: { status: 'CREATED', title: 'Claim submitted', description: `${body.claimType === 'CASHLESS' ? 'Cashless' : 'Reimbursement'} claim for ${body.reason} at ${body.hospital}.`, actor: isStaff(req) ? 'HUMAN' : 'SYSTEM' } },
+      events: {
+        create: [
+          { status: 'CREATED', title: 'Claim submitted', description: `${body.claimType === 'CASHLESS' ? 'Cashless' : 'Reimbursement'} claim for ${body.reason} at ${body.hospital}${isStaff(req) ? '' : ' (from the mobile app)'}.`, actor: isStaff(req) ? 'HUMAN' : 'SYSTEM' },
+          ...(body.consentOtp !== undefined ? [{ status: 'CREATED' as const, title: 'Customer consent verified', description: 'The customer confirmed the claim details with an OTP.', actor: 'SYSTEM' as const }] : []),
+        ],
+      },
     },
     include: claimListInclude,
   });
   await tools.logActivity({ claimId: claim.id, action: 'CLAIM_CREATED', reason: `${claim.claimNumber} created by ${req.user!.name} for ${inr(claim.billAmount ?? claim.estimatedAmount ?? 0)}.`, actor: 'HUMAN', actorName: req.user!.name });
+  if (!isStaff(req))
+    await tools.notifyOps({ title: `New claim ${claim.claimNumber} from the app`, body: `${claim.patientName} filed a ${claim.claimType === 'CASHLESS' ? 'cashless' : 'reimbursement'} claim at ${claim.hospital} for ${inr(claim.billAmount ?? claim.estimatedAmount ?? 0)}.`, type: 'INFO', claimId: claim.id });
   bus.emitEvent('claim.created', { claimId: claim.id });
   res.status(201).json(claim);
 });
@@ -156,6 +180,18 @@ r.get('/:id', async (req, res) => {
   });
   const prog = tools.docProgress(claim);
   res.json({ ...claim, checklist: { stage: prog.stage, required: prog.required, missing: prog.missing, flagged: prog.flagged, verified: prog.verified } });
+});
+
+/** Customer-facing timeline (status events, oldest first) plus open queries and the settlement, for the app's tracker screen. */
+r.get('/:id/timeline', async (req, res) => {
+  const c = await getClaimFor(req, String(req.params.id));
+  const [events, queries, settlement, documents] = await Promise.all([
+    prisma.claimEvent.findMany({ where: { claimId: c.id }, orderBy: { createdAt: 'asc' } }),
+    prisma.query.findMany({ where: { claimId: c.id, status: { not: 'CLOSED' } }, orderBy: { createdAt: 'desc' } }),
+    prisma.settlement.findUnique({ where: { claimId: c.id } }),
+    prisma.document.findMany({ where: { claimId: c.id }, select: { id: true, type: true, status: true, fileName: true, createdAt: true }, orderBy: { createdAt: 'asc' } }),
+  ]);
+  res.json({ claimId: c.id, claimNumber: c.claimNumber, status: c.status, events, openQueries: queries, settlement, documents });
 });
 
 r.get('/:id/activity', async (req, res) => {

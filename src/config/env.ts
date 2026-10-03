@@ -25,6 +25,8 @@ export const env = {
   stuckAfterMinutes: num(process.env.STUCK_AFTER_MINUTES, 240),
   maxReminders: num(process.env.MAX_REMINDERS, 2),
   autoSettleAfterMinutes: num(process.env.AUTO_SETTLE_AFTER_MINUTES, 10),
+  /** Demo OTP: every OTP step (login, consent, bank verify) accepts only this code. No SMS is sent. */
+  otpDemoCode: process.env.OTP_DEMO_CODE || '111000',
 };
 
 if (env.jwtSecret.startsWith('dev-only') && env.nodeEnv === 'production') {

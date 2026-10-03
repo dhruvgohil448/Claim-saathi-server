@@ -9,6 +9,7 @@ import { extractText } from '../services/extract';
 import { readFile } from '../services/storage';
 import { BillItem, PolicyRules, requiredDocTypes } from '../services/rules';
 import { docLabel, inr } from '../utils/format';
+import { publish, Topic } from '../realtime/hub';
 
 type Json = Prisma.InputJsonValue;
 export interface LogInput {
@@ -21,8 +22,11 @@ export interface LogInput {
   meta?: Json;
 }
 
+const topicFor = (action: string): Topic =>
+  action.startsWith('DOC') ? 'document' : action.includes('QUERY') ? 'query' : action.startsWith('POLICY') ? 'policy' : action.startsWith('USER') || action.startsWith('PROFILE') || action.startsWith('BANK') ? 'user' : action.includes('SETTLE') ? 'settlement' : 'claim';
+
 export async function logActivity(i: LogInput) {
-  return prisma.activityLog.create({
+  const row = await prisma.activityLog.create({
     data: {
       claimId: i.claimId ?? null,
       action: i.action,
@@ -33,10 +37,14 @@ export async function logActivity(i: LogInput) {
       meta: i.meta ?? Prisma.JsonNull,
     },
   });
+  publish({ topic: 'activity', claimId: i.claimId });
+  publish({ topic: topicFor(i.action), claimId: i.claimId });
+  return row;
 }
 
 export async function notifyUser(userId: string, n: { title: string; body: string; type?: NotificationType; claimId?: string | null }, log = true) {
   const row = await prisma.notification.create({ data: { userId, title: n.title, body: n.body, type: n.type ?? 'INFO', claimId: n.claimId ?? null } });
+  publish({ topic: 'notification', userId, claimId: n.claimId });
   if (log) await logActivity({ claimId: n.claimId, action: 'NOTIFIED_CUSTOMER', reason: `${n.title}: ${n.body}` });
   return row;
 }
@@ -44,6 +52,7 @@ export async function notifyUser(userId: string, n: { title: string; body: strin
 export async function notifyOps(n: { title: string; body: string; type?: NotificationType; claimId?: string | null }) {
   const ops = await prisma.user.findMany({ where: { role: { in: ['OPS', 'ADMIN'] } }, select: { id: true } });
   await prisma.notification.createMany({ data: ops.map((u) => ({ userId: u.id, title: n.title, body: n.body, type: n.type ?? 'INFO', claimId: n.claimId ?? null })) });
+  publish({ topic: 'notification', claimId: n.claimId });
 }
 
 const STATUS_TITLES: Record<ClaimStatus, string> = {

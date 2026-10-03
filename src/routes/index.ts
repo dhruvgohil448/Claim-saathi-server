@@ -6,6 +6,9 @@ import documents, { filesRouter } from './documents.routes';
 import queries from './queries.routes';
 import notifications from './notifications.routes';
 import dashboard from './dashboard.routes';
+import me from './me.routes';
+import realtime from './realtime.routes';
+import publicRoutes from './public.routes';
 import { prisma } from '../utils/prisma';
 import { env, llmEnabled } from '../config/env';
 import { storageMode } from '../services/storage';
@@ -23,6 +26,9 @@ api.get('/health', async (_req, res) => {
 });
 
 api.use('/auth', auth);
+api.use('/public', publicRoutes);
+api.use('/', realtime);
+api.use('/me', me);
 api.use('/policies', policies);
 api.use('/claims', claims);
 api.use('/documents', documents);
