@@ -1,0 +1,275 @@
+// Claim Saathi data model. Prisma default naming: tables/enums use the model names ("User", "Claim", ...).
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // transaction pooler :6543 ?pgbouncer=true
+  directUrl = env("DIRECT_URL") // session/direct :5432 (used by prisma db push / migrate)
+}
+
+enum UserRole {
+  CUSTOMER
+  OPS
+  ADMIN
+}
+
+enum ClaimStatus {
+  CREATED
+  PREAUTH_SUBMITTED
+  DOCS_PENDING
+  UNDER_REVIEW
+  QUERY_RAISED
+  NEEDS_HUMAN
+  APPROVED
+  REJECTED
+  SETTLED
+}
+
+enum ClaimType {
+  CASHLESS
+  REIMBURSEMENT
+}
+
+enum AdmissionType {
+  PLANNED
+  EMERGENCY
+}
+
+enum DocumentType {
+  HEALTH_CARD
+  POLICY_SCHEDULE
+  CLAIM_FORM
+  PREAUTH_FORM
+  DOCTOR_ESTIMATE
+  DISCHARGE_SUMMARY
+  HOSPITAL_BILL
+  PHARMACY_BILL
+  LAB_REPORT
+  PRESCRIPTION
+  PAYMENT_RECEIPT
+  ID_PROOF
+  OTHER
+}
+
+enum DocumentStatus {
+  UPLOADED
+  VERIFIED
+  NEEDS_REVIEW
+  INVALID
+}
+
+enum QueryStatus {
+  OPEN
+  ANSWERED
+  CLOSED
+}
+
+enum ActorType {
+  AI
+  HUMAN
+  SYSTEM
+}
+
+enum SettlementStatus {
+  ESTIMATED
+  APPROVED
+  PAID
+}
+
+enum NotificationType {
+  INFO
+  SUCCESS
+  WARNING
+  ACTION_REQUIRED
+}
+
+model User {
+  id            String         @id @default(cuid())
+  name          String
+  email         String         @unique
+  phone         String?
+  passwordHash  String
+  role          UserRole       @default(CUSTOMER)
+  city          String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  policies      Policy[]
+  claims        Claim[]
+  notifications Notification[]
+}
+
+model Policy {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  insurer          String
+  planName         String?
+  policyNumber     String    @unique
+  sumInsured       Int
+  roomRentLimit    Int // per day
+  icuLimit         Int? // per day
+  coPayPercent     Float     @default(0)
+  startDate        DateTime
+  endDate          DateTime?
+  waitingPeriods   Json // [{ name, months, appliesTo[] }]
+  subLimits        Json? // { cataractPerEye, maternity, ambulance, ... }
+  exclusions       Json // string[]
+  networkHospitals Json? // string[]
+  summary          String?
+  summaryHindi     String?
+  fileUrl          String?
+  rawText          String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  claims           Claim[]
+
+  @@index([userId])
+}
+
+model Claim {
+  id                String         @id @default(cuid())
+  claimNumber       String         @unique
+  userId            String
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  policyId          String
+  policy            Policy         @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  patientName       String
+  hospital          String
+  hospitalCity      String?
+  isNetworkHospital Boolean        @default(true)
+  reason            String // diagnosis / reason for admission
+  treatment         String?
+  claimType         ClaimType      @default(REIMBURSEMENT)
+  admissionType     AdmissionType  @default(EMERGENCY)
+  isAccident        Boolean        @default(false)
+  admissionDate     DateTime?
+  dischargeDate     DateTime?
+  roomType          String?
+  roomRentPerDay    Int?
+  days              Int?
+  estimatedAmount   Int?
+  billAmount        Int?
+  billItems         Json? // [{ description, qty, rate, amount, category }]
+  status            ClaimStatus    @default(CREATED)
+  aiSummary         String? // 3-line summary for ops
+  aiSuggestion      Json? // { decision, amount, reason }
+  aiConfidence      Float?
+  riskLevel         String? // LOW | MEDIUM | HIGH
+  riskFlags         Json? // string[]
+  reminderCount     Int            @default(0)
+  lastActivityAt    DateTime       @default(now())
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  documents         Document[]
+  events            ClaimEvent[]
+  queries           Query[]
+  settlement        Settlement?
+  activities        ActivityLog[]
+  notifications     Notification[]
+
+  @@index([status])
+  @@index([userId])
+}
+
+model Document {
+  id               String         @id @default(cuid())
+  claimId          String
+  claim            Claim          @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  type             DocumentType
+  fileName         String
+  fileUrl          String // storage key: "sample/...", "supabase/<path>" or "local/<file>"
+  mimeType         String?
+  size             Int?
+  status           DocumentStatus @default(UPLOADED)
+  confidence       Float?
+  validationResult Json? // { valid, confidence, issues[], checks{}, fix }
+  extractedData    Json? // { name, date, amount, doctor, hasSignature }
+  reviewedBy       String?
+  reviewNote       String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([claimId])
+  @@index([status])
+}
+
+model ClaimEvent {
+  id          String      @id @default(cuid())
+  claimId     String
+  claim       Claim       @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  status      ClaimStatus
+  title       String
+  description String?
+  actor       ActorType   @default(SYSTEM)
+  createdAt   DateTime    @default(now())
+
+  @@index([claimId])
+}
+
+model Query {
+  id               String        @id @default(cuid())
+  claimId          String
+  claim            Claim         @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  message          String
+  requestedDocType DocumentType?
+  response         String?
+  status           QueryStatus   @default(OPEN)
+  createdBy        ActorType     @default(AI)
+  respondedAt      DateTime?
+  closedAt         DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([claimId])
+  @@index([status])
+}
+
+model Settlement {
+  id             String           @id @default(cuid())
+  claimId        String           @unique
+  claim          Claim            @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  billAmount     Int
+  deductions     Json // [{ label, amount, reason, clause }]
+  coPayAmount    Int              @default(0)
+  approvedAmount Int
+  explanation    String?
+  status         SettlementStatus @default(ESTIMATED)
+  utr            String?
+  paidAt         DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+}
+
+model ActivityLog {
+  id         String    @id @default(cuid())
+  claimId    String?
+  claim      Claim?    @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  actor      ActorType @default(AI)
+  actorName  String?
+  action     String
+  reason     String
+  confidence Float?
+  meta       Json?
+  createdAt  DateTime  @default(now())
+
+  @@index([createdAt])
+  @@index([claimId])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  claimId   String?
+  claim     Claim?           @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  type      NotificationType @default(INFO)
+  title     String
+  body      String
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  @@index([userId, read])
+}
