@@ -18,8 +18,10 @@ curl "${H[@]}" -X POST "$API/auth/otp/send" -d "{\"phone\":\"$PHONE\"}" | j '.se
 BAD=$(curl "${H[@]}" -X POST "$API/auth/otp/verify" -d "{\"phone\":\"$PHONE\",\"otp\":\"000000\"}" | j '.error.code'); [ "$BAD" = BAD_REQUEST ] && ok "wrong OTP rejected"
 V=$(curl "${H[@]}" -X POST "$API/auth/otp/verify" -d "{\"phone\":\"$PHONE\",\"otp\":\"$OTP\"}")
 CT=$(echo "$V" | j '.token'); [ "$CT" != null ] || fail "otp verify: $V"
-ok "otp/verify → isNewUser=$(echo "$V" | j '.isNewUser') needsProfile=$(echo "$V" | j '.needsProfile')"
+ok "otp/verify → isNewUser=$(echo "$V" | j '.isNewUser') needsProfile=$(echo "$V" | j '.needsProfile') starterProvisioned=$(echo "$V" | j '.starterProvisioned')"
 A=(-H "Authorization: Bearer $CT")
+SC=$(curl "${H[@]}" "${A[@]}" "$API/claims" | jq -r '[.[]|"\(.claimType)/\(.status)"]|sort|join(",")')
+echo "$SC" | grep -q "CASHLESS/PREAUTH_SUBMITTED" && echo "$SC" | grep -q "REIMBURSEMENT/UNDER_REVIEW" && echo "$SC" | grep -q "REIMBURSEMENT/SETTLED" && ok "starter claims: $SC" || fail "starter claims missing: $SC"
 
 P=$(curl "${H[@]}" "${A[@]}" -X PUT "$API/me/profile" -d '{"name":"E2E Test User","email":"e2e-test@claimsaathi.test","dob":"1990-05-14","gender":"male","city":"Pune"}')
 CT=$(echo "$P" | j '.token'); A=(-H "Authorization: Bearer $CT")
@@ -73,6 +75,30 @@ N=$(curl "${H[@]}" "${A[@]}" "$API/notifications"); ok "notifications → unread
 NID=$(echo "$N" | j '.items[0].id'); curl "${H[@]}" "${A[@]}" -X POST "$API/notifications/$NID/read" >/dev/null; ok "marked one read → unread=$(curl "${H[@]}" "${A[@]}" "$API/notifications" | j '.unread')"
 ok "GET /me/home → $(curl "${H[@]}" "${A[@]}" "$API/me/home" | jq -c '{policy:.activePolicy.policyNumber,current:.currentClaim.claimNumber,status:.currentClaim.status,counts}')"
 curl "${H[@]}" "${A[@]}" -X POST "$API/me/push-token" -d '{"token":"ExponentPushToken[e2e-test-token]","platform":"ios"}' | j '.ok' | grep -q true && ok "push token saved"
+
+echo "== 6b. starter data, sample templates, live amount warnings, finance chat, upload tolerance"
+HM=$(curl "${H[@]}" "${A[@]}" "$API/me/home"); ok "home warnings → $(echo "$HM" | jq -r '[.warnings[].code]|join(",")') paidOut=$(echo "$HM" | j '.paidOut')"
+TP=$(curl "${H[@]}" "${A[@]}" "$API/demo/templates"); [ "$(echo "$TP" | j '.preauth.claimType')" = CASHLESS ] && ok "GET /demo/templates → preauth ₹$(echo "$TP" | j '.preauth.estimatedAmount') @ $(echo "$TP" | j '.preauth.hospital'), reimbursement bill ₹$(echo "$TP" | j '.reimbursement.billAmount')" || fail "templates: $TP"
+PV=$(curl "${H[@]}" "${A[@]}" -X POST "$API/claims/preview" -d "{\"policyId\":\"$POLICY_ID\",\"type\":\"REIMBURSEMENT\",\"estimatedAmount\":\"40000\",\"billAmount\":\"3,50,000\",\"roomRentPerDay\":6000,\"days\":3}")
+for W in ABOVE_SUM_INSURED ROOM_RENT_ABOVE_LIMIT BILL_ABOVE_ESTIMATE CO_PAY; do echo "$PV" | jq -e --arg w $W '.warnings|map(.code)|index($w)' >/dev/null || fail "preview missing $W: $PV"; done
+ok "POST /claims/preview → $(echo "$PV" | jq -r '[.warnings[]|"\(.severity):\(.code)"]|join(", ")') remaining=₹$(echo "$PV" | j '.remainingSumInsured')"
+ok "POST /claims/validate (alias, empty form) → $(curl "${H[@]}" "${A[@]}" -X POST "$API/claims/validate" -d '{}' | jq -c '{warnings:(.warnings|length),sumInsured}')"
+ok "claim detail warnings → $(curl "${H[@]}" "${A[@]}" "$API/claims/$CID" | jq -r '[.warnings[].code]|join(",")')"
+FN=$(curl "${H[@]}" "${A[@]}" "$API/me/finance"); ok "GET /me/finance → accounts=$(echo "$FN" | j '.accounts|length') total=₹$(echo "$FN" | j '.totalBalance') medical=$(echo "$FN" | jq -c .medical)"
+for M in "What is my total balance?" "Show my monthly expenses by category" "How much did I spend on medical?" "Out-of-pocket vs insurer paid" "Which claim payouts did I receive?"; do
+  R=$(curl "${H[@]}" "${A[@]}" -X POST "$API/ai/chat" -d "$(jq -nc --arg m "$M" '{message:$m}')")
+  echo "$R" | j '.intent' | grep -q FINANCE || fail "chat finance '$M': $R"
+  ok "ai/chat '$M' → [$(echo "$R" | j '.intent')] cards=$(echo "$R" | jq -r '[.cards[].type]|join(",")') chips=$(echo "$R" | j '.suggestions|length') :: $(echo "$R" | j '.answer' | cut -c1-90)"
+done
+U1=$(curl -s -m 60 "${A[@]}" -F "document=@$DIR/e2e-assets/e2e-pharmacy-photo.jpg;type=application/octet-stream" -F type=PHARMACY_BILL "$API/claims/$CID/documents")
+[ "$(echo "$U1" | j '.mimeType')" = image/jpeg ] && ok "upload field 'document' + octet-stream jpg → $(echo "$U1" | j '.validation.appStatus')" || fail "jpg upload: $U1"
+U2=$(curl -s -m 60 "${A[@]}" -F "attachment=@$DIR/e2e-assets/e2e-pharmacy-photo.png" "$API/claims/$CID/documents")
+[ "$(echo "$U2" | j '.mimeType')" = image/png ] && ok "upload field 'attachment' png → type=$(echo "$U2" | j '.type') $(echo "$U2" | j '.validation.appStatus')" || fail "png upload: $U2"
+printf 'not a document' > "$DIR/e2e-assets/.bad.txt"
+ok "bad type → $(curl -s -m 30 -o /dev/null -w '%{http_code}' "${A[@]}" -F "file=@$DIR/e2e-assets/.bad.txt;type=text/plain" "$API/claims/$CID/documents") · no file → $(curl -s -m 30 "${A[@]}" -F type=OTHER "$API/claims/$CID/documents" | j '.error.code')"
+rm -f "$DIR/e2e-assets/.bad.txt"
+PU=$(curl -s -m 60 "${A[@]}" -F "document=@$DIR/e2e-assets/e2e-hospital-bill.pdf;type=application/pdf" -F insurer="E2E Test Insurance (Demo)" -F policyNumber=E2E-TEST-0001 -F sumInsured=300000 -F startDate=2026-01-01 "$API/me/policies")
+ok "policy PDF upload (field 'document') → $(echo "$PU" | jq -c '{policy:.policy.policyNumber,fileUrl:(.policy.fileUrl!=null),err:.error.code}')"
 
 echo "== 7. dashboard (ops) sees it"
 ok "GET /claims?search → $(curl "${H[@]}" "${O[@]}" "$API/claims?search=$CNO" | jq -r '.[0] | "\(.claimNumber) \(.status) docs=\(._count.documents) by \(.user.name)"')"

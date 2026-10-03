@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../utils/prisma';
 import { auth, isStaff, staffOnly } from '../middleware/auth';
 import { upload } from '../middleware/upload';
-import { badRequest, forbidden, notFound } from '../utils/errors';
+import { AppError, badRequest, forbidden, notFound } from '../utils/errors';
 import { extractText } from '../services/extract';
 import * as ai from '../services/ai.service';
 import { putFile } from '../services/storage';
@@ -38,7 +38,7 @@ r.get('/:id', async (req, res) => {
 
 /** Upload a policy PDF → extract text → AI returns structured rules → saved → returned. */
 r.post('/upload', upload.single('file'), async (req, res) => {
-  if (!req.file) throw badRequest('Attach the policy PDF as "file"');
+  if (!req.file) throw new AppError(400, 'Attach the policy PDF as a multipart file (field "file" or "document")', 'FILE_REQUIRED');
   const ownerId = isStaff(req) && req.body.userId ? String(req.body.userId) : req.user!.id;
   const ex = await extractText(req.file.buffer, req.file.mimetype);
   const data = await ai.extractPolicy(ex.text);

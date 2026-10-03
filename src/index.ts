@@ -5,10 +5,12 @@ import { startFollowupJob } from './jobs/followup';
 import { storageMode } from './services/storage';
 import { prisma } from './utils/prisma';
 import { ensureDemoPack } from './demo/demoDocs';
+import { backfillStarters } from './demo/starter';
 
 registerClaimAgent();
 startFollowupJob();
 ensureDemoPack(prisma).catch((e) => console.warn('[demo-pack] ensure failed:', e.message));
+backfillStarters().then((r) => r.provisioned && console.log(`[starter] provisioned ${r.provisioned} customer(s)`)).catch((e) => console.warn('[starter] backfill failed:', e.message));
 
 const server = createApp().listen(env.port, () => {
   console.log(`[server] Claim Saathi API on :${env.port} (storage=${storageMode()}, MOCK_AI=${env.mockAI})`);

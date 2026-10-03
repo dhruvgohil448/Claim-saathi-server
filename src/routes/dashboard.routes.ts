@@ -14,6 +14,8 @@ import { storageMode } from '../services/storage';
 import { clientCount, publish } from '../realtime/hub';
 import { claimScope, optionalClaimScope, relClaimScope, setShowDemoData, showDemoData } from '../services/demo';
 
+import { backfillStarters } from '../demo/starter';
+
 const r = Router();
 r.use(auth, staffOnly);
 
@@ -220,8 +222,14 @@ r.get('/search', async (req, res) => {
 
 r.post('/admin/reset-demo', requireRole('ADMIN'), async (_req, res) => {
   const result = await runSeed(prisma);
+  await backfillStarters().catch((e) => console.warn('[starter] backfill failed:', (e as Error).message));
   publish({ topic: 'claim' });
   res.json({ ok: true, ...result });
+});
+
+/** Idempotent: give every customer (except the demo-pack user) the starter dataset. */
+r.post('/admin/provision-starters', requireRole('ADMIN', 'OPS'), async (_req, res) => {
+  res.json({ ok: true, ...(await backfillStarters()) });
 });
 
 r.post('/admin/run-followups', requireRole('ADMIN'), async (_req, res) => {

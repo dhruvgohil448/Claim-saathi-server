@@ -278,6 +278,37 @@ The checklist for this claim lists all 7 documents as required. Until 07 is uplo
 
 ---
 
+## 5c. Starter data, "Use sample data", live amount warnings, finance chat (server-driven)
+
+Full shapes are in `MOBILE_API.md` §9. The apps keep **no hardcoded data**. Every value below comes from the server.
+
+| Feature | Endpoint | App behaviour |
+|---|---|---|
+| Starter dataset | `POST /auth/otp/verify` (`starterProvisioned`) | Every new customer immediately sees a policy, bank, a pre-auth (PREAUTH_SUBMITTED), a reimbursement (UNDER_REVIEW) and a settled claim, plus alerts. Nothing to do on the client: just load `/me/home`, `/claims` and `/notifications`. |
+| Use sample data | `GET /demo/templates` | The Start Claim screen has a **Use sample data** button. It fills the form from `preauth` or `reimbursement` (based on the chosen claim type), including `policyId`, patient and dates. |
+| Live ⚠️ warnings | `POST /claims/preview` (alias `/claims/validate`) | Debounce about 400 ms on every amount, room-rent or days change. Show each `warnings[]` item as ⚠️ text under its `field`, coloured by `severity` (high = red, medium = amber, info = grey). Show `estimate.approvedAmount` / `outOfPocket` as "You may get ₹X". |
+| Warnings after save | `POST /claims` → `warnings[]`; `GET /claims/:id` → `warnings[]`; `/me/home` → `warnings[]` | Show a warning banner on claim detail and home. The server also sends a WARNING notification. |
+| Chat | `POST /ai/chat` → `answer, suggestions[], cards[]` | Chat bubbles. Show `suggestions` as tappable chips that send that text. Render `cards` by `type`: accounts (bank, masked number, balance + total), expenses (category bars), medical (insurer-paid vs out-of-pocket), payouts (claim, amount, date, UTR). |
+| Finance | `GET /me/finance` | Profile → Bank shows linked demo accounts and the total balance, labelled "Demo data". |
+| Uploads | claim docs, query reply, policy PDF | Use multipart field `file` (`document` also works). Send the real MIME type (`application/pdf`, `image/jpeg`, `image/png`, `image/heic`). Max 10 MB. Handle `413 FILE_TOO_LARGE` and `415 UNSUPPORTED_FILE_TYPE` and show `error.message`. |
+
+Kotlin:
+```kotlin
+@Serializable data class AmountWarning(val code: String, val severity: String, val message: String, val field: String? = null)
+@Serializable data class PreviewResult(val warnings: List<AmountWarning> = emptyList(), val hasBlocking: Boolean = false, val sumInsured: Int? = null,
+  val remainingSumInsured: Int? = null, val roomRentLimit: Int? = null, val coPayPercent: Double? = null, val estimate: PreviewEstimate? = null)
+@Serializable data class PreviewEstimate(val billAmount: Int = 0, val approvedAmount: Int = 0, val coPayAmount: Int = 0, val outOfPocket: Int = 0)
+@POST("claims/preview") suspend fun preview(@Body body: JsonObject): PreviewResult
+@GET("demo/templates") suspend fun templates(): JsonObject
+@GET("me/finance") suspend fun finance(): Finance
+```
+Swift:
+```swift
+struct AmountWarning: Codable, Identifiable, Hashable { let code: String; let severity: String; let message: String; let field: String?; var id: String { code + (field ?? "") } }
+struct ChatReply: Codable { let answer: String; let intent: String?; let suggestions: [String]?; let followUps: [String]?; let cards: [ChatCard]? }
+// ChatCard: decode `type` first, then the optional fields (accounts / categories / payouts / totals)
+```
+
 ## 6. ANDROID (Kotlin + Jetpack Compose)
 
 ### 6.1 Stack

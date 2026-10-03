@@ -10,13 +10,14 @@ import * as tools from '../tools';
 import { analyzePolicy, appChecklist } from './mobile';
 import { docLabel, inr, fmtDate } from '../utils/format';
 import { notFound, forbidden } from '../utils/errors';
+import { financeAnswer } from '../demo/finance';
 
 const STATUS_TEXT: Record<string, string> = {
   CREATED: 'submitted and being checked', PREAUTH_SUBMITTED: 'waiting for pre-authorisation', DOCS_PENDING: 'waiting for documents', UNDER_REVIEW: 'under review',
   QUERY_RAISED: 'waiting for your reply to a query', NEEDS_HUMAN: 'with a claims specialist', APPROVED: 'approved', REJECTED: 'not approved', SETTLED: 'settled (paid)',
 };
 
-export async function chat(user: { id: string; role: string }, message: string, claimId?: string) {
+async function chatCore(user: { id: string; role: string }, message: string, claimId?: string) {
   const staff = user.role !== 'CUSTOMER';
   const claim = claimId
     ? await prisma.claim.findFirst({ where: { OR: [{ id: claimId }, { claimNumber: claimId }] }, include: { documents: true, queries: { orderBy: { createdAt: 'desc' } }, settlement: true, events: { orderBy: { createdAt: 'asc' } }, policy: true } })
@@ -99,4 +100,22 @@ export async function chat(user: { id: string; role: string }, message: string, 
     return say('SUM_INSURED', `Sum insured is ${inr(a.sumInsured)}. ${inr(u)} has been used by approved claims, so about ${inr(Math.max(0, a.sumInsured - u))} is left this policy year.`, ['Sum insured'], ['What is covered?']);
   }
   return say('POLICY_SUMMARY', a.whatIsCovered, ['Policy summary'], claim ? ['Where is my claim?', 'Which documents are still pending?', 'How much will I get?'] : ['What is not covered?', 'What is my room rent limit?']);
+}
+
+const BASE_SUGGESTIONS = ['Where is my claim?', 'How much will I get?', 'Which documents are still pending?', 'What is my total balance?', 'How much did I spend on medical?', 'What is not covered?'];
+
+/**
+ * POST /api/ai/chat. Bank / finance questions are answered from the server's fixed demo finance data
+ * (src/demo/finance.ts) plus the user's own settled claims; everything else stays grounded in the DB.
+ * Every response carries suggestions[] (chips) and cards[] (finance cards, empty for non-finance answers).
+ */
+export async function chat(user: { id: string; role: string }, message: string, claimId?: string) {
+  const fin = await financeAnswer(user.id, message);
+  if (fin) {
+    const policy = await prisma.policy.findFirst({ where: { userId: user.id }, orderBy: { startDate: 'desc' }, select: { policyNumber: true } });
+    return { ...fin, grounded: { policyNumber: policy?.policyNumber ?? null, claimNumber: null }, ai: 'mock' as const, suggestions: [...new Set([...fin.followUps, ...BASE_SUGGESTIONS])].slice(0, 5) };
+  }
+  const r = await chatCore(user, message, claimId);
+  const followUps = (r as { followUps?: string[] }).followUps ?? [];
+  return { ...r, followUps, cards: [], suggestions: [...new Set([...followUps, ...BASE_SUGGESTIONS])].slice(0, 5) };
 }

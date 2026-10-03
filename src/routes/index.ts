@@ -13,6 +13,8 @@ import publicRoutes from './public.routes';
 import { prisma } from '../utils/prisma';
 import { env, llmEnabled } from '../config/env';
 import { storageMode } from '../services/storage';
+import { auth as authMw } from '../middleware/auth';
+import { demoTemplates } from '../demo/starter';
 
 const api = Router();
 
@@ -24,6 +26,11 @@ api.get('/health', async (_req, res) => {
     db = 'down';
   }
   res.status(db === 'ok' ? 200 : 503).json({ ok: db === 'ok', db, storage: storageMode(), ai: llmEnabled() ? env.aiProvider : 'mock', planner: env.agentPlanner, time: new Date().toISOString() });
+});
+
+/** Prefill values for Start Claim "Use sample data" (pre-auth + reimbursement), served by the server. */
+api.get('/demo/templates', authMw, async (req, res) => {
+  res.json(await demoTemplates(req.user!.id));
 });
 
 api.use('/auth', auth);

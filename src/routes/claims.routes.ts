@@ -4,7 +4,7 @@ import { ClaimStatus, DocumentType, Prisma } from '@prisma/client';
 import { prisma } from '../utils/prisma';
 import { auth, isStaff, staffOnly } from '../middleware/auth';
 import { upload } from '../middleware/upload';
-import { badRequest, forbidden, notFound } from '../utils/errors';
+import { AppError, badRequest, forbidden, notFound } from '../utils/errors';
 import { bus } from '../events/bus';
 import * as tools from '../tools';
 import * as ai from '../services/ai.service';
@@ -19,6 +19,8 @@ import { agentIdle, processDocument } from '../agent/claimAgent';
 import { DocValidation } from '../services/ai.service';
 import { fmtDate, docLabel } from '../utils/format';
 import { claimScope } from '../services/demo';
+
+import { claimWarnings, previewAmounts } from '../services/warnings';
 
 const r = Router();
 // The app opens the summary PDF in a browser/share sheet, which cannot set headers: allow ?token= for that route only.
@@ -126,6 +128,31 @@ r.post('/check-coverage', async (req, res) => {
   res.json(result);
 });
 
+// ---- amount preview / live warnings (no DB writes; partial form values are fine) ----
+const optNum = z.preprocess((v) => (v === '' || v === null ? undefined : typeof v === 'string' ? Number(v.replace(/[,₹\s]/g, '')) : v), z.number().nonnegative().optional());
+const previewInput = z.object({
+  policyId: z.string().optional(), claimId: z.string().optional(), claimType: z.enum(['CASHLESS', 'REIMBURSEMENT']).optional(),
+  estimatedAmount: optNum, billAmount: optNum, roomRentPerDay: optNum, days: optNum,
+  reason: z.string().optional(), treatment: z.string().optional(), isAccident: z.boolean().optional(),
+  admissionDate: z.preprocess((v) => (v === '' || v === null ? undefined : v), z.coerce.date().optional()),
+  billItems: z.array(billItem).optional(),
+}).passthrough();
+async function previewHandler(req: Request, res: import('express').Response) {
+  const b = previewInput.parse(normalizeType(req.body ?? {}));
+  const existing = b.claimId ? await getClaimFor(req, b.claimId) : null;
+  const p = await resolvePolicy(req, b.policyId ?? existing?.policyId);
+  const pick = <K extends 'estimatedAmount' | 'billAmount' | 'roomRentPerDay' | 'days'>(k: K) => b[k] ?? existing?.[k] ?? undefined;
+  const out = await previewAmounts(p, {
+    estimatedAmount: pick('estimatedAmount'), billAmount: pick('billAmount'), roomRentPerDay: pick('roomRentPerDay'), days: pick('days'),
+    claimType: b.claimType ?? existing?.claimType, reason: b.reason ?? existing?.reason, treatment: b.treatment ?? existing?.treatment ?? undefined,
+    admissionDate: b.admissionDate ?? existing?.admissionDate ?? undefined, isAccident: b.isAccident,
+    billItems: b.billItems?.map((i) => ({ ...i, amount: i.amount ?? i.qty * i.rate, category: categorize(i.description) })),
+  });
+  res.json({ policyId: p.id, policyNumber: p.policyNumber, ...out });
+}
+r.post('/preview', previewHandler);
+r.post('/validate', previewHandler);
+
 // ---- create ----
 r.post('/', async (req, res) => {
   const body = claimInput.parse(req.body);
@@ -171,7 +198,11 @@ r.post('/', async (req, res) => {
   if (!isStaff(req))
     await tools.notifyOps({ title: `New claim ${claim.claimNumber} from the app`, body: `${claim.patientName} filed a ${claim.claimType === 'CASHLESS' ? 'cashless' : 'reimbursement'} claim at ${claim.hospital} for ${inr(claim.billAmount ?? claim.estimatedAmount ?? 0)}.`, type: 'INFO', claimId: claim.id });
   bus.emitEvent('claim.created', { claimId: claim.id });
-  res.status(201).json(claim);
+  const warnings = await claimWarnings(claim, p);
+  const serious = warnings.filter((w) => w.severity === 'high' || w.severity === 'medium');
+  if (serious.length)
+    await tools.notifyUser(owner.id, { type: 'WARNING', title: `Check the amounts on ${claim.claimNumber}`, body: serious.map((w) => `⚠️ ${w.message}`).join(' '), claimId: claim.id });
+  res.status(201).json({ ...claim, warnings });
 });
 
 // ---- detail ----
@@ -190,7 +221,7 @@ r.get('/:id', async (req, res) => {
     },
   });
   const prog = tools.docProgress(claim);
-  res.json({ ...claim, checklist: { stage: prog.stage, required: prog.required, missing: prog.missing, flagged: prog.flagged, verified: prog.verified } });
+  res.json({ ...claim, warnings: await claimWarnings(claim, claim.policy), checklist: { stage: prog.stage, required: prog.required, missing: prog.missing, flagged: prog.flagged, verified: prog.verified } });
 });
 
 /** Customer-facing timeline (status events, oldest first) plus open queries and the settlement, for the app's tracker screen. */
@@ -357,7 +388,7 @@ export async function validateNow(claimId: string, documentId: string, answeredQ
 }
 
 export async function createDocument(req: Request, claimId: string, claimNumber: string, typeHint?: string) {
-  if (!req.file) throw badRequest('Attach the document as "file"');
+  if (!req.file) throw new AppError(400, 'Attach the document as a multipart file (field "file" or "document")', 'FILE_REQUIRED');
   let type = (typeHint && (Object.values(DocumentType) as string[]).includes(typeHint) ? typeHint : null) as DocumentType | null;
   if (!type) {
     const ex = await extractText(req.file.buffer, req.file.mimetype);

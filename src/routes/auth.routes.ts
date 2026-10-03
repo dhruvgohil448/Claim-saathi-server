@@ -9,6 +9,8 @@ import { assertOtp, formatPhone, phoneDigits, PLACEHOLDER_EMAIL_DOMAIN } from '.
 import { publicUser, tokenFor } from '../services/users';
 import * as tools from '../tools';
 
+import { provisionStarter } from '../demo/starter';
+
 const r = Router();
 const loginSchema = z.object({ email: z.string().email(), password: z.string().min(1) });
 
@@ -58,8 +60,10 @@ r.post('/otp/verify', async (req, res) => {
   } else {
     user = await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
   }
-  const pub = publicUser(user);
-  res.json({ token: tokenFor(user), user: pub, isNewUser, needsProfile: !pub.profileComplete });
+  // Starter dataset (sample policy, bank, 3 claims, alerts) on first login; idempotent for existing customers.
+  const starter = await provisionStarter(user.id).catch((e) => { console.warn('[starter] provision failed:', (e as Error).message); return { created: false }; });
+  const pub = publicUser(await prisma.user.findUniqueOrThrow({ where: { id: user.id } }));
+  res.json({ token: tokenFor(user), user: pub, isNewUser, needsProfile: !pub.profileComplete, starterProvisioned: starter.created });
 });
 
 r.get('/me', auth, async (req, res) => {

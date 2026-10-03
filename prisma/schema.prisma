@@ -131,6 +131,7 @@ model Policy {
   summaryHindi     String?
   fileUrl          String?
   rawText          String?
+  isTemplate       Boolean   @default(false) // starter dataset policy
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
   claims           Claim[]
@@ -170,6 +171,7 @@ model Claim {
   riskLevel         String? // LOW | MEDIUM | HIGH
   riskFlags         Json? // string[]
   isDemo            Boolean        @default(false) // seeded sample data (hidden when showDemoData is off)
+  isTemplate        Boolean        @default(false) // per-customer starter dataset (src/demo/starter.ts)
   reminderCount     Int            @default(0)
   lastActivityAt    DateTime       @default(now())
   createdAt         DateTime       @default(now())

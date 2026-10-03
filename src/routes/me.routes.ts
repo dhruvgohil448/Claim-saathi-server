@@ -16,6 +16,9 @@ import * as tools from '../tools';
 import { docLabel, inr } from '../utils/format';
 import { analyzePolicy } from '../services/mobile';
 import { llmEnabled } from '../config/env';
+import { claimWarnings } from '../services/warnings';
+import { financeFor } from '../demo/finance';
+import { renameStarterPatient } from '../demo/starter';
 
 const r = Router();
 r.use(auth);
@@ -40,6 +43,7 @@ r.put('/profile', async (req, res) => {
   if (clash) throw conflict('This email is already used by another account');
   const before = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id } });
   const u = await prisma.user.update({ where: { id: req.user!.id }, data: { name: b.name, email, dob: b.dob, gender: b.gender, city: b.city ?? before.city } });
+  await renameStarterPatient(u.id, before.name, u.name);
   await tools.logActivity({ action: before.name === 'New user' ? 'PROFILE_COMPLETED' : 'PROFILE_UPDATED', reason: `${u.name} ${before.name === 'New user' ? 'completed' : 'updated'} their profile in the app${u.city ? ` (${u.city})` : ''}.`, actor: 'HUMAN', actorName: u.name });
   res.json({ user: publicUser(u), token: tokenFor(u) });
 });
@@ -49,7 +53,9 @@ r.patch('/profile', async (req, res) => {
     const clash = await prisma.user.findFirst({ where: { email: b.email.toLowerCase(), NOT: { id: req.user!.id } }, select: { id: true } });
     if (clash) throw conflict('This email is already used by another account');
   }
+  const prev = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id }, select: { name: true } });
   const u = await prisma.user.update({ where: { id: req.user!.id }, data: { ...b, email: b.email?.toLowerCase() } });
+  if (b.name) await renameStarterPatient(u.id, prev.name, u.name);
   await tools.logActivity({ action: 'PROFILE_UPDATED', reason: `${u.name} updated their profile in the app.`, actor: 'HUMAN', actorName: u.name });
   res.json({ user: publicUser(u), token: tokenFor(u) });
 });
@@ -163,6 +169,11 @@ r.delete('/push-token', async (req, res) => {
   res.json({ ok: true });
 });
 
+/** Bank accounts, balances, monthly expenses (fixed demo values from the server) + medical spend / payouts from the user's claims. */
+r.get('/finance', async (req, res) => {
+  res.json(await financeFor(req.user!.id));
+});
+
 // ---------- home screen (all live from the DB) ----------
 r.get('/home', async (req, res) => {
   const id = req.user!.id;
@@ -174,7 +185,9 @@ r.get('/home', async (req, res) => {
     prisma.notification.count({ where: { userId: id, read: false } }),
     prisma.query.findMany({ where: { status: 'OPEN', claim: { userId: id } }, orderBy: { createdAt: 'desc' }, include: { claim: { select: { id: true, claimNumber: true } } } }),
   ]);
-  const activePolicy = policies.find((p) => p.startDate <= now && (!p.endDate || p.endDate >= now)) ?? policies[0] ?? null;
+  const isActive = (p: (typeof policies)[number]) => p.startDate <= now && (!p.endDate || p.endDate >= now);
+  // the customer's own policy wins over the starter (demo-template) policy
+  const activePolicy = policies.find((p) => isActive(p) && !p.isTemplate) ?? policies.find(isActive) ?? policies[0] ?? null;
   const current = claims.find((c) => !['SETTLED', 'REJECTED'].includes(c.status)) ?? claims[0] ?? null;
   const pendingActions: { kind: 'QUERY' | 'MISSING_DOC' | 'REUPLOAD_DOC' | 'COMPLETE_PROFILE' | 'ADD_BANK' | 'LINK_POLICY'; title: string; claimId?: string; claimNumber?: string; queryId?: string; documentType?: string }[] = [];
   const pub = publicUser(user);
@@ -191,10 +204,12 @@ r.get('/home', async (req, res) => {
   }
   if (claims.some((c) => c.claimType === 'REIMBURSEMENT') && !user.bankAccount) pendingActions.push({ kind: 'ADD_BANK', title: 'Add a bank account for claim payouts' });
   const strip = <T extends { documents: unknown }>({ documents, ...c }: T) => c;
+  const warnings = current && !['SETTLED', 'REJECTED'].includes(current.status) ? await claimWarnings(current, policies.find((p) => p.id === current.policyId)) : [];
   res.json({
     user: pub,
     activePolicy,
-    currentClaim: current ? { ...strip(current), checklist: (({ stage, required, missing, flagged, verified }) => ({ stage, required, missing, flagged, verified }))(tools.docProgress(current)) } : null,
+    currentClaim: current ? { ...strip(current), checklist: (({ stage, required, missing, flagged, verified }) => ({ stage, required, missing, flagged, verified }))(tools.docProgress(current)), warnings } : null,
+    warnings: warnings.map((w) => ({ ...w, claimId: current!.id, claimNumber: current!.claimNumber })),
     pendingActions,
     counts: {
       policies: policies.length,
