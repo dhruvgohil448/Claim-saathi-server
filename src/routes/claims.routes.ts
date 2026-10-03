@@ -23,6 +23,7 @@ import { fmtDate, docLabel } from '../utils/format';
 import { claimScope } from '../services/demo';
 
 import { claimWarnings, previewAmounts } from '../services/warnings';
+import { prediction as copilotPrediction } from '../services/copilot';
 
 const r = Router();
 // The app opens the summary PDF in a browser/share sheet, which cannot set headers: allow ?token= for that route only.
@@ -150,7 +151,8 @@ async function previewHandler(req: Request, res: import('express').Response) {
     admissionDate: b.admissionDate ?? existing?.admissionDate ?? undefined, isAccident: b.isAccident,
     billItems: b.billItems?.map((i) => ({ ...i, amount: i.amount ?? i.qty * i.rate, category: categorize(i.description) })),
   });
-  res.json({ policyId: p.id, policyNumber: p.policyNumber, ...out });
+  const prediction = existing ? await copilotPrediction(existing.id).catch(() => null) : null;
+  res.json({ policyId: p.id, policyNumber: p.policyNumber, ...out, ...(prediction ? { prediction } : {}) });
 }
 r.post('/preview', previewHandler);
 r.post('/validate', previewHandler);
