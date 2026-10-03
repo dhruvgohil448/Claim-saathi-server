@@ -38,8 +38,8 @@ async function buildPayload(event: N8nEvent, claimId: string, extra: Record<stri
     billAmount: c.billAmount ?? c.settlement?.billAmount ?? null,
     approvedAmount: c.settlement?.approvedAmount ?? null,
     utr: c.settlement?.utr ?? null,
-    bankName: bank.bankName || BANKS[ifsc.slice(0, 4)] || (ifsc ? ifsc.slice(0, 4) : 'bank'),
-    accountLast4: bank.accountNumber ? String(bank.accountNumber).slice(-4) : null,
+    bankName: bank.bankName || BANKS[ifsc.slice(0, 4)] || (ifsc ? ifsc.slice(0, 4) : 'HDFC Bank'), // demo default matches the app's payout card
+    accountLast4: bank.accountNumber ? String(bank.accountNumber).slice(-4) : '4821',
     queryMessage: c.queries[0]?.message ?? null,
     callbackUrl: process.env.N8N_CALLBACK_URL || null,
     ...extra,
