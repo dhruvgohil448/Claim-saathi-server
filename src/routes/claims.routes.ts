@@ -14,6 +14,7 @@ import { extractText } from '../services/extract';
 import { rerunAgent } from '../agent/claimAgent';
 import { inr } from '../utils/format';
 import { assertOtp } from '../services/otp';
+import { ensureDemoPolicy } from '../demo/starter';
 import { appChecklist, buildPdf, stepper, uploadChecks } from '../services/mobile';
 import { agentIdle, processDocument } from '../agent/claimAgent';
 import { DocValidation } from '../services/ai.service';
@@ -82,7 +83,7 @@ const claimInput = { parse: (b: unknown) => claimInputBase.parse(normalizeType(b
 async function resolvePolicy(req: Request, policyId?: string) {
   const p = policyId
     ? await prisma.policy.findUnique({ where: { id: policyId } })
-    : await prisma.policy.findFirst({ where: { userId: req.user!.id }, orderBy: { createdAt: 'desc' } });
+    : (await prisma.policy.findFirst({ where: { userId: req.user!.id }, orderBy: { createdAt: 'desc' } })) ?? (isStaff(req) ? null : await ensureDemoPolicy(req.user!.id));
   if (!p) throw badRequest('Upload your policy first (no policy found)');
   if (!isStaff(req) && p.userId !== req.user!.id) throw forbidden();
   return p;

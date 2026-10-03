@@ -58,7 +58,12 @@ export const isStarterEligible = (u: { role: string; phone: string | null; email
 const inflight = new Map<string, Promise<{ created: boolean; claims?: string[] }>>();
 
 /** Idempotent: creates the starter policy, bank and 3 claims once per customer. */
-export function provisionStarter(userId: string) {
+export function provisionStarter(_userId: string) {
+  // Step-wise demo: new customers start EMPTY (no finished sample claims). Policy/bank are created by onboarding steps.
+  return Promise.resolve({ created: false } as { created: boolean; claims?: string[] });
+}
+/** Legacy full starter dataset (3 finished claims). No longer used on login; kept for reference. */
+export function provisionLegacyStarter(userId: string) {
   if (!inflight.has(userId)) inflight.set(userId, doProvision(userId).finally(() => inflight.delete(userId)));
   return inflight.get(userId)!;
 }
@@ -154,11 +159,33 @@ export async function renameStarterPatient(userId: string, oldName: string, newN
   if (b?.template) await prisma.user.update({ where: { id: userId }, data: { bankAccount: { ...b, accountName: newName } as Prisma.InputJsonValue } });
 }
 
+/** Remove the old auto-provisioned starter rows (finished sample claims, sample alerts, template policy/bank) from customers. */
 export async function backfillStarters() {
-  const users = await prisma.user.findMany({ where: { role: 'CUSTOMER', policies: { none: { isTemplate: true } } }, select: { id: true, role: true, phone: true, email: true } });
-  let provisioned = 0;
-  for (const u of users.filter(isStarterEligible)) if ((await provisionStarter(u.id)).created) provisioned++;
-  return { checked: users.length, provisioned };
+  const claims = await prisma.claim.findMany({ where: { isTemplate: true, user: { role: 'CUSTOMER' } }, select: { id: true } });
+  if (claims.length) await prisma.claim.deleteMany({ where: { id: { in: claims.map((c) => c.id) } } });
+  const notes = await prisma.notification.deleteMany({ where: { title: 'Welcome to Claim Saathi', body: { contains: 'sample claims' } } });
+  const pols = await prisma.policy.deleteMany({ where: { isTemplate: true, claims: { none: {} } } });
+  const users = await prisma.user.findMany({ where: { role: 'CUSTOMER' }, select: { id: true, bankAccount: true } });
+  let banks = 0;
+  for (const u of users) if ((u.bankAccount as { template?: boolean } | null)?.template) { await prisma.user.update({ where: { id: u.id }, data: { bankAccount: Prisma.JsonNull } }); banks++; }
+  return { checked: users.length, provisioned: 0, removedClaims: claims.length, removedNotifications: notes.count, removedPolicies: pols.count, removedBanks: banks };
+}
+
+/** Fixed demo policy (₹5L cover, ₹4,000/day room, 10% co-pay) used when a customer links a policy with empty values or files a claim without one. */
+export async function ensureDemoPolicy(userId: string, over: Partial<{ policyNumber: string; insurer: string; planName: string; sumInsured: number }> = {}) {
+  const found = await prisma.policy.findFirst({ where: { userId }, orderBy: { createdAt: 'desc' } });
+  if (found) return found;
+  const u = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+  const name = u.name && u.name !== 'New user' ? u.name : 'Policy holder';
+  const { policyNumber, ...rest } = over;
+  return prisma.policy.create({ data: { userId, policyNumber: policyNumber || `CS-POL-${userId.slice(-8).toUpperCase()}`, ...STARTER_POLICY, planName: 'Saathi Family Health Optima', ...rest, summary: STARTER_POLICY.summary.replace('Starter demo policy: h', 'H'), members: [{ name, relation: 'Self' }] } });
+}
+
+/** Reset a customer's demo: delete their claims + notifications so the step-wise flow starts fresh (policy/bank kept). */
+export async function resetUserDemo(userId: string) {
+  const claims = await prisma.claim.deleteMany({ where: { userId } });
+  const notes = await prisma.notification.deleteMany({ where: { userId } });
+  return { deletedClaims: claims.count, deletedNotifications: notes.count };
 }
 
 /** Prefill values for Start Claim ("Use sample data"). */
@@ -174,7 +201,7 @@ export async function demoTemplates(userId: string) {
   return {
     policyId, policyNumber: policy?.policyNumber ?? null,
     preauth: { type: 'PREAUTH', claimType: 'CASHLESS', policyId, hospital: 'HeartLine Cardiac Institute', hospitalCity: 'Mumbai', isNetworkHospital: true, reason: 'Coronary artery disease, planned angiography', treatment: 'Coronary angiography (CAG)', admissionType: 'PLANNED', admissionDate: iso(day(5)), days: 2, roomType: 'Single AC', roomRentPerDay: 4000, estimatedAmount: 48000, ...patient },
-    reimbursement: pack
+    reimbursement: true
       ? { type: 'REIMBURSEMENT', claimType: 'REIMBURSEMENT', policyId, hospital: DEMO_PACK.hospital, hospitalCity: DEMO_PACK.hospitalCity, isNetworkHospital: true, reason: 'Acute appendicitis', treatment: 'Laparoscopic appendectomy', admissionType: 'EMERGENCY', admissionDate: '2026-09-24', dischargeDate: '2026-09-27', days: 3, roomType: 'Single AC room', roomRentPerDay: 5000, estimatedAmount: 80000, billAmount: 84200, ...patient }
       : { type: 'REIMBURSEMENT', claimType: 'REIMBURSEMENT', policyId, hospital: 'Sunrise Multispeciality Hospital', hospitalCity: 'Mumbai', isNetworkHospital: true, reason: 'Dengue fever', treatment: 'IV fluids and platelet monitoring', admissionType: 'EMERGENCY', admissionDate: iso(day(-6)), dischargeDate: iso(day(-2)), days: 4, roomType: 'Private room', roomRentPerDay: 4500, estimatedAmount: 40000, billAmount: 42800, ...patient },
     consentOtp: '111000',

@@ -23,7 +23,24 @@ export const DEMO_PACK = {
 /** Documents that must be verified before the claim goes to review (the receipt is requested by ops afterwards). */
 export const DEMO_GATING = ['HEALTH_CARD', 'ID_PROOF', 'CLAIM_FORM', 'HOSPITAL_BILL', 'DISCHARGE_SUMMARY', 'LAB_REPORT'];
 export const DEMO_ALL = [...DEMO_GATING, 'PAYMENT_RECEIPT'];
-export const isDemoPackClaim = (c: { policyId?: string | null } | null | undefined) => !!c && c.policyId === DEMO_PACK.policyId;
+/** Step-wise demo flow: Rohan's demo-pack policy AND every claim filed from the app (isDemo=false). Seeded dashboard samples (isDemo=true) keep the normal flow. */
+export const isDemoPackClaim = (c: { policyId?: string | null; isDemo?: boolean | null } | null | undefined) => !!c && (c.policyId === DEMO_PACK.policyId || c.isDemo === false);
+
+/** Any file: the next demo document (01..07) not yet verified on this claim. A declared demo type that is still missing wins. */
+export function nextDemoDoc(docs: { id: string; type: string; status: string; validationResult?: unknown }[], selfId: string, declaredType?: string | null): (DemoDoc & { matchedBy: 'order' }) | null {
+  const done = new Set(docs.filter((d) => d.id !== selfId && d.status === 'VERIFIED').map((d) => ((d.validationResult as { demoPack?: { n?: number } } | null)?.demoPack?.n ? DEMO_DOCS[(d.validationResult as { demoPack: { n: number } }).demoPack.n - 1].type : d.type)));
+  const declared = declaredType ? DEMO_DOCS.find((x) => x.type === declaredType && !done.has(x.type)) : undefined;
+  const d = declared ?? DEMO_DOCS.find((x) => !done.has(x.type));
+  return d ? { ...d, matchedBy: 'order' } : null;
+}
+
+/** Personalise the fixed demo values for the claim's patient (Rohan's values stay exactly as printed). */
+export function personalize<T>(v: T, name: string | null | undefined, policyNumber?: string | null): T {
+  if (!name || name === DEMO_PACK.name || name === 'New user') return v;
+  let j = JSON.stringify(v).split(DEMO_PACK.name).join(name);
+  if (policyNumber) j = j.split(DEMO_PACK.policyNumber).join(policyNumber);
+  return JSON.parse(j) as T;
+}
 
 /** Calendar date stored at 00:00 UTC (05:30 IST), so it reads as the same day in UTC and IST. */
 const ist = (d: string) => new Date(`${d}T00:00:00Z`);

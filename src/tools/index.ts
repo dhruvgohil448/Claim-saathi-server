@@ -12,7 +12,7 @@ import { docLabel, inr } from '../utils/format';
 import { publish, Topic } from '../realtime/hub';
 
 type Json = Prisma.InputJsonValue;
-import { DEMO_GATING, demoValidation, isDemoPackClaim, matchDemoDoc } from '../demo/demoDocs';
+import { DEMO_GATING, demoValidation, isDemoPackClaim, matchDemoDoc, nextDemoDoc, personalize } from '../demo/demoDocs';
 
 export interface LogInput {
   claimId?: string | null;
@@ -128,19 +128,27 @@ export function claimFacts(c: FullClaim) {
 }
 
 /** OCR + AI validation of one document; saves the result and sets VERIFIED / NEEDS_REVIEW / INVALID. */
+const DEMO_DOC_LABELS = ['health card', 'Aadhaar / ID proof', 'claim form', 'hospital bill', 'discharge summary', 'lab report', 'payment receipt'];
 export async function validateDocument(documentId: string, threshold = 0.8) {
   const doc = await prisma.document.findUniqueOrThrow({ where: { id: documentId } });
   const claim = await loadClaim(doc.claimId);
   const buf = await readFile(doc.fileUrl);
   const ex = buf ? await extractText(buf, doc.mimeType || 'application/pdf') : { text: '', method: 'none' as const, note: 'File not found in storage' };
   // Fixed demo pack: recognise the exact document and return its predetermined extraction + validation.
-  const demo = matchDemoDoc(buf, ex.text);
-  if (demo) {
+  const demo0 = matchDemoDoc(buf, ex.text) ?? (isDemoPackClaim(claim) ? nextDemoDoc(claim.documents, doc.id, doc.type) : null);
+  if (demo0) {
+    const demo = personalize(demo0, claim.patientName, claim.policy.policyNumber);
     const v = demoValidation(demo);
     const type = demo.type as DocumentType;
+    const how = demo.matchedBy === 'sha256' ? 'file fingerprint' : demo.matchedBy === 'marker' ? 'document reference' : 'upload order';
     await prisma.document.update({ where: { id: doc.id }, data: { type, status: 'VERIFIED', confidence: v.confidence, validationResult: { ...v, demoPack: { n: demo.n, marker: demo.marker, matchedBy: demo.matchedBy } } as unknown as Json, extractedData: { ...v.extracted, ...demo.details } as unknown as Json } });
-    if (demo.claimPatch) await prisma.claim.update({ where: { id: doc.claimId }, data: demo.claimPatch });
-    await logActivity({ claimId: doc.claimId, action: 'DOC_VERIFIED', reason: `${demo.label} auto-verified (demo pack ${String(demo.n).padStart(2, '0')}, matched by ${demo.matchedBy === 'sha256' ? 'file fingerprint' : 'document reference'}): ${demo.summary.replace(/^.*?verified:\s*/i, '')}`, confidence: v.confidence, meta: { documentId: doc.id, type, method: 'demo-pack', demoDoc: demo.n } });
+    if (demo0.claimPatch) await prisma.claim.update({ where: { id: doc.claimId }, data: { ...demo0.claimPatch, lastActivityAt: new Date() } });
+    await logActivity({ claimId: doc.claimId, action: 'DOC_VERIFIED', reason: `${demo.label} auto-verified (demo doc ${String(demo.n).padStart(2, '0')}, matched by ${how}): ${demo.summary.replace(/^.*?verified:\s*/i, '')}`, confidence: v.confidence, meta: { documentId: doc.id, type, method: 'demo-pack', demoDoc: demo.n } });
+    // Real-time timeline + alert for each document, so the claim fills in step by step.
+    const fresh = await prisma.claim.findUniqueOrThrow({ where: { id: doc.claimId }, select: { status: true, userId: true, claimNumber: true } });
+    await prisma.claimEvent.create({ data: { claimId: doc.claimId, status: fresh.status, title: `${demo.label} verified (${demo.n}/7)`, description: demo.summary, actor: 'AI' } });
+    await notifyUser(fresh.userId, { title: `✅ ${demo.label} verified (${demo.n}/7)`, body: demo.summary.replace(/^.*?verified:\s*/i, '') + (demo.n < 6 ? ` Next: ${DEMO_DOC_LABELS[demo.n]}.` : ''), type: 'SUCCESS', claimId: doc.claimId }, false);
+    publish({ topic: 'claim', claimId: doc.claimId, userId: fresh.userId });
     return { doc: { ...doc, type, status: 'VERIFIED' as DocumentStatus, confidence: v.confidence }, validation: v, claim: await loadClaim(doc.claimId) };
   }
   const v = await ai.validateDocument(ex, {

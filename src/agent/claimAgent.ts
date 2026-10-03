@@ -177,7 +177,18 @@ async function assess(claimId: string) {
     await prisma.claim.update({ where: { id: claimId }, data: { aiSummary: [`${c.patientName}, ${c.reason} at ${c.hospital}: bill ${inr(s.billAmount)}.`, `Estimated payable ${inr(s.approvedAmount)} after ${s.deductions.map((d) => `${d.label.toLowerCase()} ${inr(d.amount)}`).join(', ')}.`, 'Payment receipt required before approval.'].join('\n'), aiSuggestion: { decision: 'QUERY', amount: s.approvedAmount, reason: 'Payment receipt required for a reimbursement payout' }, aiConfidence: cov.covered ? 0.96 : 0.6 } });
     await tools.logActivity({ claimId, action: 'RECEIPT_REQUIRED', reason: `Payment receipt required: 6 of 7 documents verified, but there is no proof that the ${inr(s.billAmount)} bill was paid. Raise a query to the customer for the payment receipt.`, confidence: 0.96, meta: { requestedDocType: 'PAYMENT_RECEIPT' } });
     if (!c.queries.some((q) => q.status !== 'CLOSED' && q.requestedDocType === 'PAYMENT_RECEIPT'))
-      await tools.notifyOps({ title: `${c.claimNumber}: payment receipt required`, body: `${c.patientName}'s documents 01-06 are verified (estimate ${inr(s.approvedAmount)}). Raise a query for the payment receipt.`, type: 'ACTION_REQUIRED', claimId });
+      await tools.notifyOps({ title: `${c.claimNumber}: payment receipt required`, body: `${c.patientName}'s documents 01-06 are verified (estimate ${inr(s.approvedAmount)}). Raising a query for the payment receipt.`, type: 'ACTION_REQUIRED', claimId });
+    await tools.notifyUser(c.userId, { title: `${c.claimNumber} is under review`, body: `All 6 documents verified. Estimated payable ${inr(s.approvedAmount)} of ${inr(s.billAmount)}. Our team is checking your claim now.`, type: 'INFO', claimId }, false);
+    // Looks live: the ops "Payment receipt required" query arrives a few seconds after the claim goes under review
+    // (unless ops already raised one from the dashboard).
+    setTimeout(() => {
+      withLock(claimId, async () => {
+        const x = await tools.loadClaim(claimId);
+        if (x.status !== 'UNDER_REVIEW' || x.queries.some((q) => q.status !== 'CLOSED' && q.requestedDocType === 'PAYMENT_RECEIPT')) return;
+        if (x.documents.some((d) => d.type === 'PAYMENT_RECEIPT' && d.status === 'VERIFIED')) return;
+        await tools.raiseQuery(claimId, `Payment receipt required: please upload the hospital's payment receipt for the ${inr(x.billAmount ?? s.billAmount)} bill so we can approve your claim.`, 'PAYMENT_RECEIPT', 'HUMAN', 'Claims team');
+      }).catch((e) => console.warn('[agent] auto receipt query failed:', (e as Error).message));
+    }, env.demoQueryDelayMs);
     return;
   }
   for (const q of c.queries.filter((x) => x.status !== 'CLOSED')) await tools.closeQuery(q.id, 'All documents are now verified, so the open query was closed.');

@@ -67,22 +67,25 @@ r.get('/policies', async (req, res) => {
 
 const member = z.object({ name: z.string().min(1).max(80), relation: z.string().max(30).optional(), dob: z.string().optional(), gender: z.string().optional() });
 const jsonish = <T extends z.ZodTypeAny>(s: T) => z.preprocess((v) => (typeof v === 'string' && v.trim().startsWith('[') ? JSON.parse(v) : v), s);
+const blank = (v: unknown) => (v === '' || v === null || v === undefined || v === 0 || v === '0' ? undefined : v);
 const policySchema = z.object({
-  insurer: z.string().trim().min(2).max(120),
-  policyNumber: z.string().trim().min(3).max(60),
-  planName: z.string().trim().max(120).optional(),
-  sumInsured: z.coerce.number().int().positive(),
-  startDate: z.coerce.date(),
-  endDate: z.coerce.date().optional(),
+  insurer: z.preprocess(blank, z.string().trim().min(2).max(120).default('Saathi Health Insurance Co. Ltd. (Demo)')),
+  policyNumber: z.preprocess(blank, z.string().trim().min(3).max(60).optional()),
+  planName: z.preprocess(blank, z.string().trim().max(120).optional()),
+  sumInsured: z.preprocess(blank, z.coerce.number().int().positive().default(500000)),
+  startDate: z.preprocess(blank, z.coerce.date().default(new Date('2026-01-01T00:00:00Z'))),
+  endDate: z.preprocess(blank, z.coerce.date().optional()),
   members: jsonish(z.array(member)).optional(),
-  roomRentLimit: z.coerce.number().int().positive().optional(),
-  icuLimit: z.coerce.number().int().positive().optional(),
-  coPayPercent: z.coerce.number().min(0).max(50).optional(),
+  roomRentLimit: z.preprocess(blank, z.coerce.number().int().positive().default(4000)),
+  icuLimit: z.preprocess(blank, z.coerce.number().int().positive().default(8000)),
+  coPayPercent: z.preprocess(blank, z.coerce.number().min(0).max(50).default(10)),
 });
 
 /** Link a policy (JSON or multipart with optional "file" = policy PDF). With a PDF, the AI fills the rules it can read. */
 r.post('/policies', upload.single('file'), async (req, res) => {
-  const b = policySchema.parse(req.body ?? {});
+  const b0 = policySchema.parse(req.body ?? {});
+  // Demo: empty/any values are filled with the fixed demo policy (₹5L cover, ₹4,000/day room, 10% co-pay).
+  const b = { ...b0, policyNumber: b0.policyNumber ?? `CS-POL-${req.user!.id.slice(-8).toUpperCase()}`, planName: b0.planName ?? 'Saathi Family Health Optima', startDate: b0.startDate > new Date('2026-01-01T00:00:00Z') ? new Date('2026-01-01T00:00:00Z') : b0.startDate, endDate: b0.endDate && b0.endDate > b0.startDate ? b0.endDate : new Date('2026-12-31T00:00:00Z') };
   if (b.endDate && b.endDate <= b.startDate) throw badRequest('endDate must be after startDate');
   const existing = await prisma.policy.findUnique({ where: { policyNumber: b.policyNumber } });
   if (existing && existing.userId !== req.user!.id) throw conflict('This policy number is already linked to another account');
@@ -104,7 +107,7 @@ r.post('/policies', upload.single('file'), async (req, res) => {
     { name: 'Specific illnesses (cataract, hernia, joint replacement, ENT)', months: 24 },
     { name: 'Pre-existing diseases', months: 36 },
   ];
-  const summary = extracted?.summaryEnglish ?? `Covers hospital stays up to ${inr(b.sumInsured)}. Room rent up to ${inr(roomRentLimit)} per day.${coPayPercent ? ` You pay ${coPayPercent}% of every claim (co-pay).` : ' No co-pay.'}`;
+  const summary = (b0.policyNumber ? null : 'Hospital bills up to ₹5,00,000 a year. Room rent up to ₹4,000/day, ICU ₹8,000/day, 10% co-pay on every claim.') ?? extracted?.summaryEnglish ?? `Covers hospital stays up to ${inr(b.sumInsured)}. Room rent up to ${inr(roomRentLimit)} per day.${coPayPercent ? ` You pay ${coPayPercent}% of every claim (co-pay).` : ' No co-pay.'}`;
   const data = {
     insurer: b.insurer,
     planName: b.planName ?? extracted?.planName ?? null,
@@ -118,7 +121,7 @@ r.post('/policies', upload.single('file'), async (req, res) => {
     subLimits: (extracted?.subLimits ?? Prisma.JsonNull) as Prisma.InputJsonValue,
     // Mock extraction returns generic lists, so only trust exclusions from a real LLM; the Policy Reader also parses the PDF text.
     exclusions: (llmEnabled() ? extracted?.exclusions ?? [] : []) as Prisma.InputJsonValue,
-    networkHospitals: (extracted?.networkHospitals ?? Prisma.JsonNull) as Prisma.InputJsonValue,
+    networkHospitals: (extracted?.networkHospitals ?? ['Sunrise Multispeciality Hospital', 'HeartLine Cardiac Institute', 'CityLife Hospital', 'Lotus Care Hospital']) as Prisma.InputJsonValue,
     members: (b.members ?? Prisma.JsonNull) as Prisma.InputJsonValue,
     summary,
     summaryHindi: extracted?.summaryHindi ?? null,

@@ -14,7 +14,8 @@ import { prisma } from '../utils/prisma';
 import { env, llmEnabled } from '../config/env';
 import { storageMode } from '../services/storage';
 import { auth as authMw } from '../middleware/auth';
-import { demoTemplates } from '../demo/starter';
+import { demoTemplates, resetUserDemo } from '../demo/starter';
+import { publish } from '../realtime/hub';
 
 const api = Router();
 
@@ -31,6 +32,13 @@ api.get('/health', async (_req, res) => {
 /** Prefill values for Start Claim "Use sample data" (pre-auth + reimbursement), served by the server. */
 api.get('/demo/templates', authMw, async (req, res) => {
   res.json(await demoTemplates(req.user!.id));
+});
+
+/** Start the step-wise demo again for the signed-in account: deletes this user's claims + alerts (policy/bank kept). */
+api.post('/demo/reset', authMw, async (req, res) => {
+  const out = await resetUserDemo(req.user!.id);
+  publish({ topic: 'claim' });
+  res.json({ ok: true, ...out });
 });
 
 api.use('/auth', auth);

@@ -17,6 +17,7 @@ export const env = {
   openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
   geminiKey: process.env.GEMINI_API_KEY || '',
   geminiModel: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+  demoQueryDelayMs: Number(process.env.DEMO_QUERY_DELAY_MS ?? 6000),
   agentPlanner: (process.env.AGENT_PLANNER || 'rules').toLowerCase() as 'rules' | 'llm',
   ocrEnabled: bool(process.env.OCR_ENABLED, false),
   autoVerifyConfidence: num(process.env.AUTO_VERIFY_CONFIDENCE, 0.8),

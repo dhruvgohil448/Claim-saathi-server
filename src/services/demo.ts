@@ -8,7 +8,7 @@ let cache: { v: boolean; at: number } | null = null;
 export async function showDemoData(): Promise<boolean> {
   if (cache && Date.now() - cache.at < 5000) return cache.v;
   const row = await prisma.appSetting.findUnique({ where: { key: KEY } });
-  const v = row ? row.value !== false : true; // default ON
+  const v = row ? row.value === true : false; // default OFF: dashboard shows only live app data
   cache = { v, at: Date.now() };
   return v;
 }
