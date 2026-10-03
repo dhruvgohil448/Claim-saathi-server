@@ -71,12 +71,19 @@ async function onClaimCreated({ claimId }: { claimId: string }) {
 }
 
 // ---------- document.uploaded ----------
-async function onDocumentUploaded({ claimId, documentId }: { claimId: string; documentId: string }) {
+/** Validate an uploaded document and run the agent's follow-up steps. Awaitable so the API can return the result. */
+export function processDocument(claimId: string, documentId: string, answeredQueryId?: string) {
   return withLock(claimId, async () => {
     const { doc, validation: v, claim } = await tools.validateDocument(documentId, env.autoVerifyConfidence);
     if (doc.status === 'VERIFIED') {
-      const q = claim.queries.find((x) => x.status !== 'CLOSED' && x.requestedDocType === doc.type);
-      if (q) await tools.closeQuery(q.id, `${docLabel(doc.type)} received and verified, so the query was closed automatically.`);
+      const q = claim.queries.find((x) => x.status !== 'CLOSED' && (x.requestedDocType === doc.type || (x.id === answeredQueryId && !x.requestedDocType)));
+      if (q) {
+        await tools.closeQuery(q.id, `${docLabel(doc.type)} received and verified, so the query was closed automatically.`);
+        const stillOpen = claim.queries.filter((x) => x.id !== q.id && x.status === 'OPEN').length;
+        const prog = tools.docProgress(claim);
+        if (!stillOpen && claim.status === 'QUERY_RAISED' && prog.missing.length)
+          await tools.updateClaimStatus(claimId, 'DOCS_PENDING', { description: `Query resolved. Still waiting for ${prog.missing.map((m) => docLabel(m).toLowerCase()).join(', ')}.`, action: 'QUERY_RESOLVED', confidence: 0.9 });
+      }
     } else {
       await tools.notifyUser(claim.userId, {
         title: `Please re-upload your ${docLabel(doc.type).toLowerCase()}`,
@@ -86,7 +93,11 @@ async function onDocumentUploaded({ claimId, documentId }: { claimId: string; do
       });
     }
     await evaluate(claimId, true);
+    return { doc, validation: v };
   });
+}
+async function onDocumentUploaded({ claimId, documentId }: { claimId: string; documentId: string }) {
+  await processDocument(claimId, documentId);
 }
 
 // ---------- query.answered ----------

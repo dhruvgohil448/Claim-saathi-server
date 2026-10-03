@@ -16,8 +16,9 @@
 | GET | `/me` (or `/auth/me`) | – | user (see shape below) |
 | PUT | `/me/profile` | `{ name, email, dob: "1990-05-14", gender: "male"\|"female"\|"other", city? }` | `{ user, token }` (**replace the stored token**, since name and email are inside it). `PATCH` for partial edits. |
 | GET | `/me/policies` | – | `Policy[]` |
-| GET | `/me/policies/:id` | – | policy + its claims |
-| POST | `/me/policies` | JSON or multipart: `{ insurer, policyNumber, sumInsured, startDate, endDate?, members?: [{name, relation, dob?}], planName?, roomRentLimit?, icuLimit?, coPayPercent? }`, optional `file` = policy PDF (multipart sends `members` as a JSON string) | `201 { policy, extractedFromPdf }`. Same number again from the same user is an update; a number owned by another user returns 409. |
+| GET | `/me/policies/:id` | – | policy (with stored `analysis`) + its claims |
+| POST | `/me/policies/:id/analyze` | – | **Policy Reader** → `{ coverage:[{item,covered,limit,detail}], exclusions[], conditions[], waitingPeriods:[{name,months,eligibleFrom,active,status}], roomRentLimit, sumInsured, icuLimit, coPayPercent, members[], whatIsCovered, isActive, source, ai, analyzedAt }`. Built from DB policy fields + rawText and stored on the policy. |
+| POST | `/me/policies` | JSON or multipart: `{ insurer, policyNumber, sumInsured, startDate, endDate?, members?: [{name, relation, dob?}], planName?, roomRentLimit?, icuLimit?, coPayPercent? }`, optional `file` = policy PDF (multipart sends `members` as a JSON string) | `201 { policy, analysis, extractedFromPdf }` (auto-analysed). Same number again from the same user is an update; a number owned by another user returns 409. |
 | GET | `/me/bank` | – | `{ bank: { accountName, accountNumberMasked, ifsc, verified } \| null }` |
 | POST | `/me/bank` | `{ accountName, accountNumber: "123456789012", ifsc: "HDFC0001234", bankName?, otp: "111000" }` | `{ bank }` (masked) |
 | POST / DELETE | `/me/push-token` | `{ token: "ExponentPushToken[...]", platform: "ios" }` | `{ ok: true }` |
@@ -43,13 +44,15 @@ User shape: `{ id, name, email|null, phone, role, city, dob, gender, bank|null, 
 | POST | `/claims` | Body below. `201` returns the claim. Fires the Claim Agent: coverage check, then pre-auth for cashless or a document checklist. Ops also get a "New claim from the app" notification. |
 | GET | `/claims` | My claims (`?status=QUERY_RAISED,DOCS_PENDING`, `?search=`) with `_count.documents`, `_count.queries` (open), `settlement` |
 | GET | `/claims/:id` | `:id` = id or claim number. Full detail: documents (with `validationResult`), events, queries, settlement, activities, `checklist` |
-| GET | `/claims/:id/timeline` | `{ status, events[] (oldest first), openQueries[], settlement, documents[] }` |
-| POST | `/claims/:id/documents` | multipart `file` (pdf/jpg/png/webp/heic, max 10 MB) + optional `type` (`HOSPITAL_BILL`, `DISCHARGE_SUMMARY`, `PHARMACY_BILL`, `LAB_REPORT`, `PRESCRIPTION`, `CLAIM_FORM`, `PAYMENT_RECEIPT`, `HEALTH_CARD`, `PREAUTH_FORM`, `DOCTOR_ESTIMATE`, `ID_PROOF`, `OTHER`; auto-detected if omitted). Saved to the Supabase `claim-files` bucket. The AI then validates it in a few seconds: re-fetch the claim and read `documents[].status` (`VERIFIED`, `NEEDS_REVIEW` or `INVALID`) and `validationResult.{checks,issues,fix,summary}`. |
+| GET | `/claims/:id/timeline` | `{ status, events[] (oldest first), openQueries[], settlement, documents[], steps[], currentStep, latestOpsUpdate, checklistWarnings[] }`. `steps` = Created → Docs Submitted → Docs Verified → Under Review → Approved (or Rejected) → Settlement, each `{ key, label, state: done\|current\|pending\|failed, at, note }`. `latestOpsUpdate = { kind: QUERY\|OPS\|AI\|SYSTEM, message, at }` |
+| GET | `/claims/:id/checklist` | `{ stage, items:[{ type, label, required, status: uploaded\|verified\|missing\|rejected, rawStatus, documentId, fileName, confidence, reason, fix }], warnings[] (e.g. "Payment receipt required"), progress:{required,verified,uploaded}, complete }` |
+| GET | `/claims/:id/summary.pdf` | `application/pdf` claim summary. Also accepts `?token=<JWT>` for WebView/Linking. |
+| POST | `/claims/:id/documents` | multipart `file` (pdf/jpg/png/webp/heic, max 10 MB) + optional `type` (`HOSPITAL_BILL`, `DISCHARGE_SUMMARY`, `PHARMACY_BILL`, `LAB_REPORT`, `PRESCRIPTION`, `CLAIM_FORM`, `PAYMENT_RECEIPT`, `HEALTH_CARD`, `PREAUTH_FORM`, `DOCTOR_ESTIMATE`, `ID_PROOF`, `OTHER`; auto-detected if omitted). Saved to Supabase storage and **validated synchronously**. `201` returns the document plus `validation: { status, appStatus, confidence, summary, fix, checks:[{ key: documentDetected\|patientNameMatched\|amountDetected\|dateValid\|requiredFieldsPresent, label, passed: true\|false\|null, detail }], issues[], warnings[], extracted }`, `checklist`, `claimStatus` |
 | GET | `/claims/:id/documents` | list |
 | GET | `/documents/:id/url` | `{ url }`: short-lived signed URL for `<Image>`/WebView |
 | POST | `/claims/check-coverage` | same body as create, no DB write. Returns covered / warnings / clauses. |
 | POST | `/claims/:id/preauth` | (cashless) submit pre-auth and get an estimate |
-| GET | `/claims/:id/settlement` | `{ billAmount, approvedAmount, coPayAmount, deductions:[{label, amount, reason, clause}], status: ESTIMATED\|APPROVED\|PAID, utr, paidAt }` (404 until it has been calculated) |
+| GET | `/claims/:id/settlement` | `{ billAmount, approvedAmount, coPayAmount, deductions:[{label, amount, reason, clause}], status: PREVIEW\|ESTIMATED\|APPROVED\|PAID, utr, paidAt, isDemo: true, isEstimate, preview }`. Before ops calculate it, it returns a rules-engine estimate (`status: PREVIEW, preview: true`) instead of 404. |
 
 Create body:
 ```json
@@ -67,7 +70,7 @@ Create body:
 | GET | `/queries?status=OPEN` | my queries (with `claim`) |
 | GET | `/claims/:id/queries` | queries on one claim |
 | GET | `/queries/:id/explain` | plain-language explanation and next steps |
-| POST | `/queries/:id/respond` | multipart: `response` (text), optional `file`, optional `type` (defaults to the query's requested doc type). Query becomes `ANSWERED`, ops are notified, and the Claim Agent validates the file. If the requested document verifies, the query is **CLOSED** automatically. |
+| POST | `/queries/:id/respond` | multipart: `response` (text), optional `file`, optional `type` (defaults to the query's requested doc type). Ops are notified. With a file, the response includes `document` (the same shape as the upload response, validated synchronously). If the requested document verifies, the query is **CLOSED** automatically; otherwise it is `ANSWERED`. |
 
 ## 5. Notifications
 `GET /notifications` (alias `/notifications/my`, `?unread=true`) → `{ items: [{ id, title, body, type: INFO|SUCCESS|WARNING|ACTION_REQUIRED, read, claimId, claim:{claimNumber}, createdAt }], unread }` ·
@@ -76,14 +79,9 @@ Create body:
 ## 6. Live updates
 `GET /stream?token=<JWT>` (Server-Sent Events). Sends `event: ready` on connect, then `event: change` with `data: {"topics":["claim","document","query","activity","notification",...],"claimIds":[...],"at":"..."}` whenever something changes. Customers only receive changes on their own claims and notifications. React Native has no built-in EventSource, so either use `react-native-sse` or poll (`/me/home` and `/notifications` every 5–10 s).
 
-## 7. Policy chat (existing)
-`POST /policies/:id/chat { question, claimId? }` → `{ answer, sources[], followUps[] }`
+## 7. AI assistant
+`POST /ai/chat { message, claimId? }` → `{ answer, intent, sources[], followUps[], grounded:{policyNumber, claimNumber}, ai }`. The answer is grounded in the user's own policy and claim from the DB. In mock mode it is rules-based (status, documents, rejections, queries, settlement, room rent, co-pay, waiting periods, exclusions, sub-limits, sum insured). With an LLM key set it uses the LLM with the same context.
 
-## Pending (requested, not built yet)
-- `POST /me/policies/:id/analyze` (Policy Reader: coverage[], exclusions[], conditions[], "What is covered?")
-- `GET /claims/:id/checklist` (per-document uploaded/verified/missing/rejected status + "Payment receipt required" warnings). For now use `checklist` on `GET /claims/:id` or `/me/home`.
-- Synchronous per-check validation in the upload response. Today the result appears on the claim a few seconds after upload.
-- Stepper-style timeline (Created → Docs Submitted → Docs Verified → Under Review → Approved → Settlement)
-- `POST /ai/chat { claimId?, message }` grounded assistant
-- `isDemo` flag and pre-calculation preview on `/claims/:id/settlement`
-- `GET /claims/:id/summary.pdf`
+Policy chat (older endpoint, still available): `POST /policies/:id/chat { question, claimId? }` → `{ answer, sources[], followUps[] }`
+
+Full React Native build guide: see `MOBILE_APP_GUIDE.md`.

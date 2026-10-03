@@ -8,7 +8,7 @@ import { forbidden, notFound } from '../utils/errors';
 import { bus } from '../events/bus';
 import * as tools from '../tools';
 import * as ai from '../services/ai.service';
-import { createDocument } from './claims.routes';
+import { createDocument, validateNow } from './claims.routes';
 
 const r = Router();
 r.use(auth);
@@ -49,7 +49,12 @@ r.post('/:id/respond', upload.single('file'), async (req, res) => {
   await tools.logActivity({ claimId: q.claimId, action: 'QUERY_ANSWERED', reason: `${req.user!.name} replied: "${updated.response}"`, actor: 'HUMAN', actorName: req.user!.name });
   if (!isStaff(req))
     await tools.notifyOps({ title: `${q.claim.claimNumber}: customer replied to a query`, body: `${req.user!.name}: ${updated.response}`.slice(0, 280), type: 'INFO', claimId: q.claimId });
-  bus.emitEvent('query.answered', { claimId: q.claimId, queryId: q.id, documentId });
+  if (documentId) {
+    const result = await validateNow(q.claimId, documentId, q.id);
+    const after = await prisma.query.findUniqueOrThrow({ where: { id: q.id } });
+    return void res.json({ ...after, document: result });
+  }
+  bus.emitEvent('query.answered', { claimId: q.claimId, queryId: q.id });
   res.json(updated);
 });
 

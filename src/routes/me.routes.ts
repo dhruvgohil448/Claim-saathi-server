@@ -14,6 +14,8 @@ import * as ai from '../services/ai.service';
 import { bus } from '../events/bus';
 import * as tools from '../tools';
 import { docLabel, inr } from '../utils/format';
+import { analyzePolicy } from '../services/mobile';
+import { llmEnabled } from '../config/env';
 
 const r = Router();
 r.use(auth);
@@ -108,7 +110,8 @@ r.post('/policies', upload.single('file'), async (req, res) => {
     endDate: b.endDate ?? new Date(b.startDate.getTime() + 365 * 86400000 - 86400000),
     waitingPeriods: waitingPeriods as Prisma.InputJsonValue,
     subLimits: (extracted?.subLimits ?? Prisma.JsonNull) as Prisma.InputJsonValue,
-    exclusions: (extracted?.exclusions ?? []) as Prisma.InputJsonValue,
+    // Mock extraction returns generic lists, so only trust exclusions from a real LLM; the Policy Reader also parses the PDF text.
+    exclusions: (llmEnabled() ? extracted?.exclusions ?? [] : []) as Prisma.InputJsonValue,
     networkHospitals: (extracted?.networkHospitals ?? Prisma.JsonNull) as Prisma.InputJsonValue,
     members: (b.members ?? Prisma.JsonNull) as Prisma.InputJsonValue,
     summary,
@@ -119,8 +122,11 @@ r.post('/policies', upload.single('file'), async (req, res) => {
     ? await prisma.policy.update({ where: { id: existing.id }, data, omit: { rawText: true } })
     : await prisma.policy.create({ data: { userId: req.user!.id, policyNumber: b.policyNumber, ...data }, omit: { rawText: true } });
   await tools.logActivity({ action: existing ? 'POLICY_UPDATED' : 'POLICY_LINKED', reason: `${req.user!.name} ${existing ? 'updated' : 'linked'} policy ${policy.policyNumber} (${policy.insurer}, ${inr(policy.sumInsured)})${fileUrl ? ' with the policy PDF' : ''}.`, actor: 'HUMAN', actorName: req.user!.name, meta: { policyId: policy.id } });
+  const full = await prisma.policy.findUniqueOrThrow({ where: { id: policy.id } });
+  const analysis = analyzePolicy(full);
+  await prisma.policy.update({ where: { id: policy.id }, data: { analysis: analysis as unknown as Prisma.InputJsonValue, analyzedAt: new Date() } });
   bus.emitEvent('policy.uploaded', { policyId: policy.id, userId: req.user!.id });
-  res.status(existing ? 200 : 201).json({ policy, extractedFromPdf: !!extracted });
+  res.status(existing ? 200 : 201).json({ policy: { ...policy, analysis }, analysis, extractedFromPdf: !!extracted });
 });
 
 // ---------- bank account (OTP-verified) ----------
@@ -200,6 +206,16 @@ r.get('/home', async (req, res) => {
     },
     paidOut: claims.reduce((s, c) => s + (c.settlement?.status === 'PAID' ? c.settlement.approvedAmount : 0), 0),
   });
+});
+
+/** Policy Reader: (re)derive coverage, exclusions, conditions, waiting periods and a plain summary from the stored policy + PDF text. */
+r.post('/policies/:id/analyze', async (req, res) => {
+  const p = await prisma.policy.findFirst({ where: { id: req.params.id, ...(req.user!.role === 'CUSTOMER' ? { userId: req.user!.id } : {}) } });
+  if (!p) throw badRequest('Policy not found');
+  const analysis = analyzePolicy(p);
+  await prisma.policy.update({ where: { id: p.id }, data: { analysis: analysis as unknown as Prisma.InputJsonValue, analyzedAt: new Date() } });
+  await tools.logActivity({ action: 'POLICY_ANALYZED', reason: `Policy Reader analysed ${p.policyNumber}: ${analysis.coverage.length} cover items, ${analysis.exclusions.length} exclusions, ${analysis.waitingPeriods.filter((w) => w.active).length} active waiting periods.`, confidence: 0.9, meta: { policyId: p.id } });
+  res.json(analysis);
 });
 
 r.get('/policies/:id', async (req, res) => {
