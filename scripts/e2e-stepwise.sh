@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Step-wise demo E2E for ANY user: new phone → OTP 111000 → empty home → link policy with empty values → claim →
+# Step-wise demo E2E for ANY user: new phone → OTP 111000 → empty home → link policy with empty / app-default values → claim →
 # upload 7 ARBITRARY files one by one (Nth upload = demo doc N) → receipt query → ops approve + settle (₹62,748).
 # Usage: BASE=https://<tunnel> PHONE=9000012345 ./scripts/e2e-stepwise.sh   (KEEP=1 keeps the test user)
 set -euo pipefail
@@ -23,8 +23,8 @@ curl "${H[@]}" "${A[@]}" -X PUT "$API/me/profile" -d '{"name":"Asha Mehta","dob"
 NC=$(curl "${H[@]}" "${A[@]}" "$API/claims" | jq 'length'); NN=$(curl "${H[@]}" "${A[@]}" "$API/notifications" | jq '(.items // .) | length')
 [ "$NC" = 0 ] || fail "home not empty: $NC claims"; ok "home: $NC claims, $NN notifications, policies=$(curl "${H[@]}" "${A[@]}" "$API/me/policies" | jq 'length')"
 
-echo "== 2. link policy with empty values → fixed demo policy"
-P=$(curl "${H[@]}" "${A[@]}" -X POST "$API/me/policies" -d '{}')
+echo "== 2. link policy with empty / app-default values → fixed demo policy"
+P=$(curl "${H[@]}" "${A[@]}" -X POST "$API/me/policies" -d '{"insurer":"","policyNumber":"","sumInsured":0,"startDate":"2026-10-03","roomRentLimit":5000,"coPayPercent":10}')
 PID=$(echo "$P" | j '.policy.id'); [ "$PID" != null ] || fail "policy: $P"
 ok "$(echo "$P" | jq -r '.policy|"\(.policyNumber): SI ₹\(.sumInsured), room ₹\(.roomRentLimit)/day, co-pay \(.coPayPercent)%"')"
 OT=$(curl "${H[@]}" -X POST "$API/auth/login" -d '{"email":"ops@claimsaathi.demo","password":"demo123"}' | j '.token'); O=(-H "Authorization: Bearer $OT")
@@ -37,7 +37,7 @@ ok "dashboard sees it: $(curl "${H[@]}" "${O[@]}" "$API/claims?search=$CNO" | jq
 echo "== 4. upload 7 arbitrary photos one by one"
 for i in 1 2 3 4 5 6 7; do
   if [ $i = 7 ]; then
-    for k in $(seq 1 20); do QID=$(curl "${H[@]}" "${A[@]}" "$API/claims/$CID/queries" | jq -r '[.[]|select(.status=="OPEN")][0].id'); [ "$QID" != null ] && break; sleep 1; done
+    for k in $(seq 1 20); do QID=$(curl "${H[@]}" "${A[@]}" "$API/claims/$CID/queries" | jq -r '[.[]|select(.status=="OPEN")][0].id' 2>/dev/null || echo null); [ "$QID" != null ] && [ -n "$QID" ] && break; sleep 1; done
     [ "$QID" != null ] || fail "no receipt query raised"
     ok "query raised: $(curl "${H[@]}" "${A[@]}" "$API/claims/$CID/queries" | jq -r '[.[]|select(.status=="OPEN")][0].message' | cut -c1-80) · claim $(curl "${H[@]}" "${A[@]}" "$API/claims/$CID" | j .status)"
     R=$(curl -s -m 90 "${A[@]}" -F "file=@$TMP/photo_$i.png;type=image/png" -F "response=Receipt attached" "$API/queries/$QID/respond"); D=$(echo "$R" | jq '.document')

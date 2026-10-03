@@ -23,7 +23,7 @@ async function buildPayload(event: N8nEvent, claimId: string, extra: Record<stri
     include: { user: { select: { id: true, name: true, phone: true, bankAccount: true } }, settlement: true, queries: { orderBy: { createdAt: 'desc' }, take: 1 } },
   });
   if (!c) return null;
-  const bank = (c.user?.bankAccount ?? {}) as { accountNumber?: string; ifsc?: string };
+  const bank = (c.user?.bankAccount ?? {}) as { accountNumber?: string; ifsc?: string; bankName?: string };
   const ifsc = (bank.ifsc || '').toUpperCase();
   return {
     event,
@@ -38,7 +38,7 @@ async function buildPayload(event: N8nEvent, claimId: string, extra: Record<stri
     billAmount: c.billAmount ?? c.settlement?.billAmount ?? null,
     approvedAmount: c.settlement?.approvedAmount ?? null,
     utr: c.settlement?.utr ?? null,
-    bankName: BANKS[ifsc.slice(0, 4)] ?? (ifsc ? ifsc.slice(0, 4) : 'bank'),
+    bankName: bank.bankName || BANKS[ifsc.slice(0, 4)] || (ifsc ? ifsc.slice(0, 4) : 'bank'),
     accountLast4: bank.accountNumber ? String(bank.accountNumber).slice(-4) : null,
     queryMessage: c.queries[0]?.message ?? null,
     callbackUrl: process.env.N8N_CALLBACK_URL || null,
@@ -66,6 +66,11 @@ export function emitN8n(event: N8nEvent, claimId: string | null | undefined, ext
 }
 
 const STATUS_EVENT: Record<string, N8nEvent> = { QUERY_RAISED: 'query.raised', APPROVED: 'claim.approved', SETTLED: 'claim.settled' };
+/** Called from updateDocumentStatus (every upload is validated → VERIFIED / REJECTED / NEEDS_REVIEW). */
+export function n8nOnDocument(claimId: string | null | undefined, documentId: string, type: string, status: string) {
+  emitN8n('document.uploaded', claimId, { documentId, documentType: type, documentStatus: status });
+}
+
 /** Called from updateClaimStatus. */
 export function n8nOnStatus(claimId: string, status: string) {
   const ev = STATUS_EVENT[status];
@@ -77,8 +82,6 @@ export function registerN8n() {
   if (registered) return;
   registered = true;
   bus.onEvent('claim.created', (p) => emitN8n('claim.submitted', p.claimId));
-  bus.onEvent('document.uploaded', (p) => emitN8n('document.uploaded', p.claimId, { documentId: p.documentId }));
-  bus.onEvent('query.answered', (p) => emitN8n('query.resolved', p.claimId, { queryId: p.queryId }));
   console.log(`[n8n] ${WEBHOOK() ? 'enabled' : 'disabled (N8N_WEBHOOK_URL not set)'}`);
 }
 

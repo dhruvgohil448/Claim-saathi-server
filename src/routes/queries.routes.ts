@@ -1,3 +1,4 @@
+import { emitN8n } from '../lib/n8n';
 import { relClaimScope } from '../services/demo';
 import { Router } from 'express';
 import { z } from 'zod';
@@ -49,6 +50,7 @@ r.post('/:id/respond', upload.single('file'), async (req, res) => {
   }
   const updated = await prisma.query.update({ where: { id: q.id }, data: { status: 'ANSWERED', response: response || (req.file ? `Uploaded ${req.file.originalname}` : 'Responded'), respondedAt: new Date() } });
   await tools.logActivity({ claimId: q.claimId, action: 'QUERY_ANSWERED', reason: `${req.user!.name} replied: "${updated.response}"`, actor: 'HUMAN', actorName: req.user!.name });
+  emitN8n('query.resolved', q.claimId, { queryId: q.id });
   if (!isStaff(req))
     await tools.notifyOps({ title: `${q.claim.claimNumber}: customer replied to a query`, body: `${req.user!.name}: ${updated.response}`.slice(0, 280), type: 'INFO', claimId: q.claimId });
   if (documentId) {

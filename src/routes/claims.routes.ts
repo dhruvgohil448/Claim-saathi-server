@@ -1,3 +1,4 @@
+import { n8nOnDocument } from '../lib/n8n';
 import { Router, Request } from 'express';
 import { z } from 'zod';
 import { ClaimStatus, DocumentType, Prisma } from '@prisma/client';
@@ -379,6 +380,7 @@ r.get('/:id/documents', async (req, res) => {
 /** Run the Claim Agent's document check now and return per-check results (also stored on the document). */
 export async function validateNow(claimId: string, documentId: string, answeredQueryId?: string) {
   const { doc, validation } = await processDocument(claimId, documentId, answeredQueryId);
+  n8nOnDocument(claimId, documentId, doc.type, doc.status);
   await agentIdle(claimId); // include follow-up steps (e.g. submitted for review) in the response
   const claim = await prisma.claim.findUniqueOrThrow({ where: { id: claimId }, include: { documents: { orderBy: { createdAt: 'asc' } } } });
   const checklist = appChecklist(claim);

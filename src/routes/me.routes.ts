@@ -85,7 +85,8 @@ const policySchema = z.object({
 r.post('/policies', upload.single('file'), async (req, res) => {
   const b0 = policySchema.parse(req.body ?? {});
   // Demo: empty/any values are filled with the fixed demo policy (₹5L cover, ₹4,000/day room, 10% co-pay).
-  const b = { ...b0, policyNumber: b0.policyNumber ?? `CS-POL-${req.user!.id.slice(-8).toUpperCase()}`, planName: b0.planName ?? 'Saathi Family Health Optima', startDate: b0.startDate > new Date('2026-01-01T00:00:00Z') ? new Date('2026-01-01T00:00:00Z') : b0.startDate, endDate: b0.endDate && b0.endDate > b0.startDate ? b0.endDate : new Date('2026-12-31T00:00:00Z') };
+  // Fixed demo cover for every user (keeps the step-wise demo maths identical: ₹84,200 bill → ₹62,748 payable).
+  const b = { ...b0, sumInsured: 500000, roomRentLimit: 4000, icuLimit: 8000, coPayPercent: 10, policyNumber: b0.policyNumber ?? `CS-POL-${req.user!.id.slice(-8).toUpperCase()}`, planName: b0.planName ?? 'Saathi Family Health Optima', startDate: b0.startDate > new Date('2026-01-01T00:00:00Z') ? new Date('2026-01-01T00:00:00Z') : b0.startDate, endDate: b0.endDate && b0.endDate > b0.startDate ? b0.endDate : new Date('2026-12-31T00:00:00Z') };
   if (b.endDate && b.endDate <= b.startDate) throw badRequest('endDate must be after startDate');
   const existing = await prisma.policy.findUnique({ where: { policyNumber: b.policyNumber } });
   if (existing && existing.userId !== req.user!.id) throw conflict('This policy number is already linked to another account');
@@ -107,7 +108,7 @@ r.post('/policies', upload.single('file'), async (req, res) => {
     { name: 'Specific illnesses (cataract, hernia, joint replacement, ENT)', months: 24 },
     { name: 'Pre-existing diseases', months: 36 },
   ];
-  const summary = (b0.policyNumber ? null : 'Hospital bills up to ₹5,00,000 a year. Room rent up to ₹4,000/day, ICU ₹8,000/day, 10% co-pay on every claim.') ?? extracted?.summaryEnglish ?? `Covers hospital stays up to ${inr(b.sumInsured)}. Room rent up to ${inr(roomRentLimit)} per day.${coPayPercent ? ` You pay ${coPayPercent}% of every claim (co-pay).` : ' No co-pay.'}`;
+  const summary = 'Hospital bills up to ₹5,00,000 a year. Room rent up to ₹4,000/day, ICU ₹8,000/day, 10% co-pay on every claim.';
   const data = {
     insurer: b.insurer,
     planName: b.planName ?? extracted?.planName ?? null,
