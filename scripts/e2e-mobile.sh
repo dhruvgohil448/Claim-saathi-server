@@ -2,7 +2,7 @@
 # Mobile-app E2E: acts as the phone through BASE (public tunnel by default), then checks the ops/dashboard APIs.
 # Usage: BASE=https://<tunnel> ./scripts/e2e-mobile.sh      (KEEP=1 to skip cleanup)
 set -euo pipefail
-BASE="${BASE:-https://fda-lyrics-arts-legislative.trycloudflare.com}"
+BASE="${BASE:-https://occasionally-role-subsequently-herb.trycloudflare.com}"
 API="$BASE/api"; PHONE="9000012345"; OTP="111000"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ok(){ printf '  \033[32m✔\033[0m %s\n' "$*"; }
