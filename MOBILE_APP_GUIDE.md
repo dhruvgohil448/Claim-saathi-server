@@ -26,7 +26,7 @@ Claim Saathi is an AI health-insurance claim companion. The customer app handles
 
 | Item | Value |
 |---|---|
-| Base URL | `https://occasionally-role-subsequently-herb.trycloudflare.com/api` (cloudflared quick tunnel to the dev Mac `:5050`). It changes when the tunnel restarts (see Troubleshooting). Keep it in build config (Android `BuildConfig.API_BASE_URL`, iOS `.xcconfig` / Info.plist `API_BASE_URL`). |
+| Base URL | `https://role-budgets-genuine-maps.trycloudflare.com/api` (cloudflared quick tunnel to the dev Mac `:5050`). It changes when the tunnel restarts (see Troubleshooting). Keep it in build config (Android `BuildConfig.API_BASE_URL`, iOS `.xcconfig` / Info.plist `API_BASE_URL`). |
 | Transport | HTTPS, so iOS ATS and Android cleartext rules need no exceptions. Android emulator only: `http://10.0.2.2:5050/api` also works if you add a debug `network_security_config`. |
 | Auth | `Authorization: Bearer <JWT>` (valid for 7 days). Store it securely: Android uses EncryptedSharedPreferences or DataStore, iOS uses the Keychain. **Replace it after `PUT/PATCH /me/profile`** (the response carries a new token). |
 | OTP | **Always `111000`** for login OTP, claim consent OTP and bank verification. No SMS is sent. |
@@ -326,7 +326,7 @@ struct ChatReply: Codable { let answer: String; let intent: String?; let suggest
 `build.gradle.kts (app)`:
 ```kotlin
 plugins { id("com.android.application"); kotlin("android"); kotlin("plugin.serialization"); id("org.jetbrains.kotlin.plugin.compose") }
-android { defaultConfig { minSdk = 26; buildConfigField("String", "API_BASE_URL", "\"https://occasionally-role-subsequently-herb.trycloudflare.com/api/\"") }
+android { defaultConfig { minSdk = 26; buildConfigField("String", "API_BASE_URL", "\"https://role-budgets-genuine-maps.trycloudflare.com/api/\"") }
           buildFeatures { compose = true; buildConfig = true } }
 dependencies {
   implementation(platform("androidx.compose:compose-bom:2025.09.00"))
@@ -571,7 +571,7 @@ fun inr(n: Int?): String = n?.let { "₹" + NumberFormat.getNumberInstance(Local
 ### 6.8 Android build prompts (copy-paste, in order)
 
 **A1. Setup**
-> Create an Android app "ClaimSaathi" (Kotlin, Jetpack Compose, Material 3, minSdk 26, single Activity). Add the dependencies from MOBILE_APP_GUIDE.md §6.1 (Navigation Compose, Retrofit + kotlinx.serialization converter, OkHttp + logging + okhttp-sse, security-crypto, Coil, lifecycle-viewmodel/runtime-compose). Add `buildConfigField API_BASE_URL = "https://occasionally-role-subsequently-herb.trycloudflare.com/api/"`. Create `ui/theme/Theme.kt` with primary #00BAF2, navy #002E6E and the success/warning/danger/muted colours from §2, plus an `inr()` formatter. Create `data/TokenStore.kt` (EncryptedSharedPreferences), `data/AuthInterceptor.kt` (adds Bearer, emits `sessionExpired` on 401), and `data/Network.kt` (Json with ignoreUnknownKeys/explicitNulls=false/coerceInputValues, OkHttp with a 90 s read timeout, Retrofit). Add INTERNET and CAMERA permissions and a FileProvider. Add an `apiMessage()` helper that parses `{error:{code,message}}`.
+> Create an Android app "ClaimSaathi" (Kotlin, Jetpack Compose, Material 3, minSdk 26, single Activity). Add the dependencies from MOBILE_APP_GUIDE.md §6.1 (Navigation Compose, Retrofit + kotlinx.serialization converter, OkHttp + logging + okhttp-sse, security-crypto, Coil, lifecycle-viewmodel/runtime-compose). Add `buildConfigField API_BASE_URL = "https://role-budgets-genuine-maps.trycloudflare.com/api/"`. Create `ui/theme/Theme.kt` with primary #00BAF2, navy #002E6E and the success/warning/danger/muted colours from §2, plus an `inr()` formatter. Create `data/TokenStore.kt` (EncryptedSharedPreferences), `data/AuthInterceptor.kt` (adds Bearer, emits `sessionExpired` on 401), and `data/Network.kt` (Json with ignoreUnknownKeys/explicitNulls=false/coerceInputValues, OkHttp with a 90 s read timeout, Retrofit). Add INTERNET and CAMERA permissions and a FileProvider. Add an `apiMessage()` helper that parses `{error:{code,message}}`.
 
 **A2. Models + API**
 > Create `data/Models.kt` with exactly the `@Serializable` enums and data classes in §6.3 (UserRole, ClaimStatus, ClaimType, AdmissionType, DocumentType, DocumentStatus, QueryStatus, ActorType, SettlementStatus incl. PREVIEW, NotificationType, AppDocStatus, StepState, plus User, Policy, Claim, Document, ClaimEvent, ClaimQuery, Settlement, AppNotification, PolicyAnalysis, Checklist, UploadResponse, Timeline, Step, ChatReply, Home and the request bodies). Create `data/ClaimSaathiApi.kt` exactly as in §6.4 (paths without a leading slash: `auth/otp/send`, `auth/otp/verify`, `me`, `me/profile`, `me/home`, `me/policies`, `me/policies/{id}`, `me/policies/{id}/analyze`, `me/bank`, `me/push-token`, `claims`, `claims/check-coverage`, `claims/{id}`, `claims/{id}/preauth`, `claims/{id}/checklist`, `claims/{id}/documents`, `documents/{id}/url`, `claims/{id}/timeline`, `claims/{id}/settlement`, `queries`, `claims/{id}/queries`, `queries/{id}/explain`, `queries/{id}/respond`, `ai/chat`, `notifications`, `notifications/{id}/read`, `notifications/read-all`). Add a `Repository` that wraps calls in `Result` and maps HttpException to `apiMessage()`.

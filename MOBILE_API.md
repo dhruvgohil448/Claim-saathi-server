@@ -1,6 +1,6 @@
 # Claim Saathi – Mobile (customer) API
 
-**Current base URL (cloudflared tunnel → Mac :5050):** `https://occasionally-role-subsequently-herb.trycloudflare.com/api`
+**Current base URL (cloudflared tunnel → Mac :5050):** `https://role-budgets-genuine-maps.trycloudflare.com/api`
 (Local: `http://localhost:5050/api`. Quick tunnels change URL on restart. Update this line and the app's env when that happens.)
 
 - Auth: `Authorization: Bearer <JWT>` (7-day token). Errors: `{ "error": { "code", "message" } }`.
